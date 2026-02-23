@@ -1,0 +1,1962 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/keyoku-ai/keyoku-embedded/vectorindex"
+	"github.com/oklog/ulid/v2"
+	_ "modernc.org/sqlite"
+)
+
+// SQLiteStore implements Store using SQLite + HNSW vector index.
+type SQLiteStore struct {
+	db     *sql.DB
+	mu     sync.Mutex // serialized writes
+	index  *vectorindex.HNSW
+	dbPath string
+}
+
+// NewSQLite creates a new SQLite-backed store with an HNSW vector index.
+func NewSQLite(dbPath string, dimensions int) (*SQLiteStore, error) {
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open SQLite database: %w", err)
+	}
+
+	// Single writer, multiple readers
+	db.SetMaxOpenConns(1)
+
+	hnswCfg := vectorindex.DefaultHNSWConfig(dimensions)
+	index := vectorindex.NewHNSW(hnswCfg)
+
+	s := &SQLiteStore{
+		db:     db,
+		index:  index,
+		dbPath: dbPath,
+	}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate: %w", err)
+	}
+
+	// Try to load HNSW from disk, rebuild from BLOBs if it fails
+	hnswPath := dbPath + ".hnsw"
+	if err := index.Load(hnswPath); err != nil {
+		s.rebuildIndex()
+	}
+
+	return s, nil
+}
+
+func (s *SQLiteStore) Close() error {
+	// Persist HNSW index
+	if s.dbPath != "" && s.dbPath != ":memory:" {
+		s.index.Save(s.dbPath + ".hnsw")
+	}
+	return s.db.Close()
+}
+
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
+// rebuildIndex reconstructs the HNSW index from embedding BLOBs in SQLite.
+func (s *SQLiteStore) rebuildIndex() {
+	rows, err := s.db.Query(
+		`SELECT id, embedding FROM memories WHERE state IN ('active', 'stale') AND embedding IS NOT NULL`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var embBytes []byte
+		if err := rows.Scan(&id, &embBytes); err != nil {
+			continue
+		}
+		vec := decodeEmbedding(embBytes)
+		if len(vec) > 0 {
+			s.index.Add(id, vec)
+		}
+	}
+}
+
+// --- Schema Migration ---
+
+func (s *SQLiteStore) migrate() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS memories (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			content TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			embedding BLOB,
+			memory_type TEXT NOT NULL CHECK(memory_type IN ('IDENTITY','PREFERENCE','RELATIONSHIP','EVENT','ACTIVITY','PLAN','CONTEXT','EPHEMERAL')),
+			tags TEXT DEFAULT '[]',
+			importance REAL NOT NULL DEFAULT 0.5,
+			confidence REAL NOT NULL DEFAULT 0.5,
+			stability REAL NOT NULL DEFAULT 60,
+			access_count INTEGER NOT NULL DEFAULT 0,
+			last_accessed_at TEXT,
+			state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','stale','archived','deleted')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			expires_at TEXT,
+			deleted_at TEXT,
+			version INTEGER NOT NULL DEFAULT 1,
+			source TEXT DEFAULT '',
+			session_id TEXT DEFAULT '',
+			extraction_provider TEXT DEFAULT '',
+			extraction_model TEXT DEFAULT '',
+			importance_factors TEXT DEFAULT '[]',
+			confidence_factors TEXT DEFAULT '[]'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_id ON memories(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_agent_id ON memories(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_state ON memories(entity_id, state)`,
+
+		`CREATE TABLE IF NOT EXISTS history (
+			id TEXT PRIMARY KEY,
+			memory_id TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			changes TEXT DEFAULT '{}',
+			reason TEXT DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_history_memory_id ON history(memory_id)`,
+
+		`CREATE TABLE IF NOT EXISTS session_messages (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			session_id TEXT DEFAULT '',
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			turn_number INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_entity ON session_messages(entity_id)`,
+
+		`CREATE TABLE IF NOT EXISTS entities (
+			id TEXT PRIMARY KEY,
+			owner_entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			canonical_name TEXT NOT NULL,
+			type TEXT NOT NULL DEFAULT 'other',
+			description TEXT DEFAULT '',
+			aliases TEXT DEFAULT '[]',
+			embedding BLOB,
+			attributes TEXT DEFAULT '{}',
+			mention_count INTEGER NOT NULL DEFAULT 0,
+			last_mentioned_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_entities_owner ON entities(owner_entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(owner_entity_id, canonical_name, type)`,
+
+		`CREATE TABLE IF NOT EXISTS entity_mentions (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			memory_id TEXT NOT NULL,
+			mention_text TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 0.5,
+			context_snippet TEXT DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+			FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity ON entity_mentions(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_mentions_memory ON entity_mentions(memory_id)`,
+
+		`CREATE TABLE IF NOT EXISTS relationships (
+			id TEXT PRIMARY KEY,
+			owner_entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			source_entity_id TEXT NOT NULL,
+			target_entity_id TEXT NOT NULL,
+			relationship_type TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			strength REAL NOT NULL DEFAULT 0.5,
+			confidence REAL NOT NULL DEFAULT 0.5,
+			is_bidirectional INTEGER NOT NULL DEFAULT 0,
+			evidence_count INTEGER NOT NULL DEFAULT 0,
+			attributes TEXT DEFAULT '{}',
+			first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+			last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+			FOREIGN KEY (target_entity_id) REFERENCES entities(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_relationships_owner ON relationships(owner_entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source_entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target_entity_id)`,
+
+		`CREATE TABLE IF NOT EXISTS relationship_evidence (
+			id TEXT PRIMARY KEY,
+			relationship_id TEXT NOT NULL,
+			memory_id TEXT NOT NULL,
+			evidence_text TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 0.5,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (relationship_id) REFERENCES relationships(id) ON DELETE CASCADE,
+			FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rel_evidence_relationship ON relationship_evidence(relationship_id)`,
+
+		`CREATE TABLE IF NOT EXISTS extraction_schemas (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			version TEXT DEFAULT '1.0',
+			schema_definition TEXT NOT NULL DEFAULT '{}',
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(entity_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_schemas_entity ON extraction_schemas(entity_id)`,
+
+		`CREATE TABLE IF NOT EXISTS custom_extractions (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			memory_id TEXT NOT NULL DEFAULT '',
+			schema_id TEXT NOT NULL,
+			extracted_data TEXT NOT NULL DEFAULT '{}',
+			extraction_provider TEXT DEFAULT '',
+			extraction_model TEXT DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0.5,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (schema_id) REFERENCES extraction_schemas(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_extractions_entity ON custom_extractions(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_extractions_schema ON custom_extractions(schema_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_extractions_memory ON custom_extractions(memory_id)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("migration failed: %w\nSQL: %s", err, stmt)
+		}
+	}
+
+	return nil
+}
+
+// --- Memory CRUD ---
+
+func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if mem.ID == "" {
+		mem.ID = ulid.Make().String()
+	}
+	if mem.AgentID == "" {
+		mem.AgentID = "default"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	mem.CreatedAt = time.Now().UTC()
+	mem.UpdatedAt = mem.CreatedAt
+
+	tags, _ := mem.Tags.Value()
+	impFactors, _ := mem.ImportanceFactors.Value()
+	confFactors, _ := mem.ConfidenceFactors.Value()
+
+	var lastAccessed *string
+	if mem.LastAccessedAt != nil {
+		v := mem.LastAccessedAt.UTC().Format(time.RFC3339)
+		lastAccessed = &v
+	}
+
+	var expiresAt *string
+	if mem.ExpiresAt != nil {
+		v := mem.ExpiresAt.UTC().Format(time.RFC3339)
+		expiresAt = &v
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO memories (id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, source, session_id, extraction_provider, extraction_model,
+			importance_factors, confidence_factors)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mem.ID, mem.EntityID, mem.AgentID, mem.Content, mem.Hash, mem.Embedding,
+		string(mem.Type), tags, mem.Importance, mem.Confidence, mem.Stability,
+		mem.AccessCount, lastAccessed, string(mem.State), now, now,
+		expiresAt, mem.Source, mem.SessionID, mem.ExtractionProvider, mem.ExtractionModel,
+		impFactors, confFactors,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Add embedding to HNSW index
+	if len(mem.Embedding) > 0 {
+		vec := decodeEmbedding(mem.Embedding)
+		if len(vec) > 0 {
+			s.index.Add(mem.ID, vec)
+		}
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) GetMemory(ctx context.Context, id string) (*Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE id = ?`, id)
+
+	return scanMemory(row)
+}
+
+func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []string) ([]*Memory, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanMemories(rows)
+}
+
+func (s *SQLiteStore) UpdateMemory(ctx context.Context, id string, updates MemoryUpdate) (*Memory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var setClauses []string
+	var args []any
+
+	if updates.Content != nil {
+		setClauses = append(setClauses, "content = ?")
+		args = append(args, *updates.Content)
+	}
+	if updates.Importance != nil {
+		setClauses = append(setClauses, "importance = ?")
+		args = append(args, *updates.Importance)
+	}
+	if updates.Confidence != nil {
+		setClauses = append(setClauses, "confidence = ?")
+		args = append(args, *updates.Confidence)
+	}
+	if updates.Tags != nil {
+		tagsJSON, _ := json.Marshal(*updates.Tags)
+		setClauses = append(setClauses, "tags = ?")
+		args = append(args, string(tagsJSON))
+	}
+	if updates.State != nil {
+		setClauses = append(setClauses, "state = ?")
+		args = append(args, string(*updates.State))
+	}
+	if updates.ExpiresAt != nil {
+		setClauses = append(setClauses, "expires_at = ?")
+		args = append(args, updates.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+
+	if len(setClauses) == 0 {
+		return s.GetMemory(ctx, id)
+	}
+
+	setClauses = append(setClauses, "updated_at = ?", "version = version + 1")
+	args = append(args, time.Now().UTC().Format(time.RFC3339))
+	args = append(args, id)
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE memories SET %s WHERE id = ?", strings.Join(setClauses, ", ")),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+
+	return s.getMemoryUnlocked(ctx, id)
+}
+
+func (s *SQLiteStore) DeleteMemory(ctx context.Context, id string, hard bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if hard {
+		_, err := s.db.ExecContext(ctx, "DELETE FROM memories WHERE id = ?", id)
+		if err == nil {
+			s.index.Remove(id)
+		}
+		return err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET state = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
+		now, now, id)
+	if err == nil {
+		s.index.Remove(id)
+	}
+	return err
+}
+
+// --- Vector Search (HNSW-backed) ---
+
+func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, entityID string, limit int, minScore float64) ([]*SimilarityResult, error) {
+	candidateCount := limit * 5
+	if candidateCount < 50 {
+		candidateCount = 50
+	}
+
+	searchResults, err := s.index.Search(embedding, candidateCount)
+	if err != nil {
+		return nil, fmt.Errorf("HNSW search failed: %w", err)
+	}
+
+	if len(searchResults) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, len(searchResults))
+	distByID := make(map[string]float32, len(searchResults))
+	for i, sr := range searchResults {
+		ids[i] = sr.ID
+		distByID[sr.ID] = sr.Distance
+	}
+
+	memories, err := s.GetMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*SimilarityResult
+	for _, m := range memories {
+		if m.EntityID != entityID {
+			continue
+		}
+		if m.State == StateDeleted || m.State == StateArchived {
+			continue
+		}
+		sim := float64(1 - distByID[m.ID])
+		if sim < minScore {
+			continue
+		}
+		results = append(results, &SimilarityResult{Memory: m, Similarity: sim})
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
+func (s *SQLiteStore) FindSimilarWithOptions(ctx context.Context, embedding []float32, entityID string, limit int, minScore float64, opts SimilarityOptions) ([]*SimilarityResult, error) {
+	candidateCount := limit * 5
+	if candidateCount < 50 {
+		candidateCount = 50
+	}
+
+	searchResults, err := s.index.Search(embedding, candidateCount)
+	if err != nil {
+		return nil, fmt.Errorf("HNSW search failed: %w", err)
+	}
+
+	if len(searchResults) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]string, len(searchResults))
+	distByID := make(map[string]float32, len(searchResults))
+	for i, sr := range searchResults {
+		ids[i] = sr.ID
+		distByID[sr.ID] = sr.Distance
+	}
+
+	memories, err := s.GetMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []*SimilarityResult
+	for _, m := range memories {
+		if m.EntityID != entityID {
+			continue
+		}
+		if m.State == StateDeleted || m.State == StateArchived {
+			continue
+		}
+		if opts.AgentID != "" && m.AgentID != opts.AgentID {
+			continue
+		}
+		sim := float64(1 - distByID[m.ID])
+		if sim < minScore {
+			continue
+		}
+		results = append(results, &SimilarityResult{Memory: m, Similarity: sim})
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results, nil
+}
+
+// --- Queries ---
+
+func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*Memory, error) {
+	var where []string
+	var args []any
+
+	if query.EntityID != "" {
+		where = append(where, "entity_id = ?")
+		args = append(args, query.EntityID)
+	}
+	if query.AgentID != "" {
+		where = append(where, "agent_id = ?")
+		args = append(args, query.AgentID)
+	}
+	if len(query.Types) > 0 {
+		ph := make([]string, len(query.Types))
+		for i, t := range query.Types {
+			ph[i] = "?"
+			args = append(args, string(t))
+		}
+		where = append(where, fmt.Sprintf("memory_type IN (%s)", strings.Join(ph, ",")))
+	}
+	if len(query.States) > 0 {
+		ph := make([]string, len(query.States))
+		for i, st := range query.States {
+			ph[i] = "?"
+			args = append(args, string(st))
+		}
+		where = append(where, fmt.Sprintf("state IN (%s)", strings.Join(ph, ",")))
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	orderBy := "created_at"
+	if query.OrderBy != "" {
+		orderBy = query.OrderBy
+	}
+	direction := "ASC"
+	if query.Descending {
+		direction = "DESC"
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories %s ORDER BY %s %s LIMIT ? OFFSET ?`,
+		whereClause, orderBy, direction)
+
+	args = append(args, limit, query.Offset)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanMemories(rows)
+}
+
+func (s *SQLiteStore) GetRecentMemories(ctx context.Context, entityID string, hours int, limit int) ([]*Memory, error) {
+	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).UTC().Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE entity_id = ? AND created_at > ? AND state = 'active'
+		ORDER BY created_at DESC LIMIT ?`, entityID, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// --- Deduplication ---
+
+func (s *SQLiteStore) FindByHash(ctx context.Context, entityID, hash string) (*Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE entity_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
+		entityID, hash)
+	mem, err := scanMemory(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return mem, err
+}
+
+func (s *SQLiteStore) FindByHashWithAgent(ctx context.Context, entityID, agentID, hash string) (*Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE entity_id = ? AND agent_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
+		entityID, agentID, hash)
+	mem, err := scanMemory(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return mem, err
+}
+
+// --- History ---
+
+func (s *SQLiteStore) LogHistory(ctx context.Context, entry *HistoryEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry.ID == "" {
+		entry.ID = ulid.Make().String()
+	}
+	changesJSON, _ := json.Marshal(entry.Changes)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO history (id, memory_id, operation, changes, reason, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		entry.ID, entry.MemoryID, entry.Operation, string(changesJSON), entry.Reason, now)
+	return err
+}
+
+func (s *SQLiteStore) GetHistory(ctx context.Context, memoryID string, limit int) ([]*HistoryEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, memory_id, operation, changes, reason, created_at
+		FROM history WHERE memory_id = ? ORDER BY created_at DESC LIMIT ?`,
+		memoryID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*HistoryEntry
+	for rows.Next() {
+		var e HistoryEntry
+		var changesStr string
+		var createdStr string
+		if err := rows.Scan(&e.ID, &e.MemoryID, &e.Operation, &changesStr, &e.Reason, &createdStr); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(changesStr), &e.Changes)
+		e.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		entries = append(entries, &e)
+	}
+	return entries, nil
+}
+
+// --- Session Messages ---
+
+func (s *SQLiteStore) AddSessionMessage(ctx context.Context, msg *SessionMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if msg.ID == "" {
+		msg.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO session_messages (id, entity_id, agent_id, session_id, role, content, turn_number, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.EntityID, msg.AgentID, msg.SessionID, msg.Role, msg.Content, msg.TurnNumber, now)
+	return err
+}
+
+func (s *SQLiteStore) GetRecentSessionMessages(ctx context.Context, entityID string, limit int) ([]*SessionMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, session_id, role, content, turn_number, created_at
+		FROM session_messages WHERE entity_id = ?
+		ORDER BY created_at DESC LIMIT ?`, entityID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []*SessionMessage
+	for rows.Next() {
+		var m SessionMessage
+		var createdStr string
+		if err := rows.Scan(&m.ID, &m.EntityID, &m.AgentID, &m.SessionID, &m.Role, &m.Content, &m.TurnNumber, &createdStr); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		messages = append(messages, &m)
+	}
+	return messages, nil
+}
+
+// --- Access Tracking ---
+
+func (s *SQLiteStore) UpdateAccessStats(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	ph := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, now)
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id IN (%s)",
+			strings.Join(ph, ",")),
+		args...)
+	return err
+}
+
+func (s *SQLiteStore) UpdateStability(ctx context.Context, id string, newStability float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET stability = ? WHERE id = ?", newStability, id)
+	return err
+}
+
+// --- Lifecycle ---
+
+func (s *SQLiteStore) TransitionState(ctx context.Context, id string, newState MemoryState, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET state = ?, updated_at = ? WHERE id = ?",
+		string(newState), now, id)
+	if err == nil && (newState == StateDeleted || newState == StateArchived) {
+		s.index.Remove(id)
+	}
+	return err
+}
+
+func (s *SQLiteStore) GetStaleMemories(ctx context.Context, entityID string, decayThreshold float64) ([]*Memory, error) {
+	return s.QueryMemories(ctx, MemoryQuery{
+		EntityID: entityID,
+		States:   []MemoryState{StateStale},
+		Limit:    100,
+	})
+}
+
+func (s *SQLiteStore) GetAllEntities(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT DISTINCT entity_id FROM memories WHERE state != 'deleted'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (s *SQLiteStore) GetActiveMemoriesForDecay(ctx context.Context, batchSize, offset int) ([]*Memory, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE state IN ('active', 'stale')
+		ORDER BY created_at ASC LIMIT ? OFFSET ?`, batchSize, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+func (s *SQLiteStore) BatchTransitionStates(ctx context.Context, transitions []StateTransition) (int, error) {
+	if len(transitions) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	affected := 0
+
+	stmt, err := tx.PrepareContext(ctx,
+		"UPDATE memories SET state = ?, updated_at = ? WHERE id = ?")
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	for _, t := range transitions {
+		result, err := stmt.ExecContext(ctx, string(t.NewState), now, t.MemoryID)
+		if err != nil {
+			continue
+		}
+		n, _ := result.RowsAffected()
+		affected += int(n)
+		if t.NewState == StateDeleted || t.NewState == StateArchived {
+			s.index.Remove(t.MemoryID)
+		}
+	}
+
+	return affected, tx.Commit()
+}
+
+// --- Entity CRUD ---
+
+func (s *SQLiteStore) CreateEntity(ctx context.Context, entity *Entity) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entity.ID == "" {
+		entity.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	aliases, _ := entity.Aliases.Value()
+	attrs, _ := entity.Attributes.Value()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO entities (id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entity.ID, entity.OwnerEntityID, entity.AgentID, entity.CanonicalName,
+		string(entity.Type), entity.Description, aliases, entity.Embedding,
+		attrs, entity.MentionCount, now, now)
+	return err
+}
+
+func (s *SQLiteStore) GetEntity(ctx context.Context, id string) (*Entity, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities WHERE id = ?`, id)
+	return scanEntity(row)
+}
+
+func (s *SQLiteStore) GetEntityByName(ctx context.Context, ownerEntityID, name string, entityType EntityType) (*Entity, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities WHERE owner_entity_id = ? AND canonical_name = ? AND type = ?`,
+		ownerEntityID, name, string(entityType))
+	entity, err := scanEntity(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return entity, err
+}
+
+func (s *SQLiteStore) FindEntityByAlias(ctx context.Context, ownerEntityID, alias string) (*Entity, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities WHERE owner_entity_id = ? AND canonical_name = ?`,
+		ownerEntityID, alias)
+	entity, err := scanEntity(row)
+	if err == nil {
+		return entity, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities WHERE owner_entity_id = ?`, ownerEntityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		e, err := scanEntityFromRows(rows)
+		if err != nil {
+			continue
+		}
+		for _, a := range e.Aliases {
+			if strings.EqualFold(a, alias) {
+				return e, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (s *SQLiteStore) FindSimilarEntities(ctx context.Context, embedding []float32, ownerEntityID string, limit int, minScore float64) ([]*Entity, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities WHERE owner_entity_id = ? AND embedding IS NOT NULL`,
+		ownerEntityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type scored struct {
+		entity *Entity
+		sim    float64
+	}
+	var candidates []scored
+
+	for rows.Next() {
+		e, err := scanEntityFromRows(rows)
+		if err != nil {
+			continue
+		}
+		entityVec := decodeEmbedding(e.Embedding)
+		if len(entityVec) == 0 || len(entityVec) != len(embedding) {
+			continue
+		}
+		sim := float64(vectorindex.CosineSimilarity(embedding, entityVec))
+		if sim >= minScore {
+			candidates = append(candidates, scored{entity: e, sim: sim})
+		}
+	}
+
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].sim > candidates[j-1].sim; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	result := make([]*Entity, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.entity
+	}
+	return result, nil
+}
+
+func (s *SQLiteStore) QueryEntities(ctx context.Context, query EntityQuery) ([]*Entity, error) {
+	var where []string
+	var args []any
+
+	if query.OwnerEntityID != "" {
+		where = append(where, "owner_entity_id = ?")
+		args = append(args, query.OwnerEntityID)
+	}
+	if query.AgentID != "" {
+		where = append(where, "agent_id = ?")
+		args = append(args, query.AgentID)
+	}
+	if len(query.Types) > 0 {
+		ph := make([]string, len(query.Types))
+		for i, t := range query.Types {
+			ph[i] = "?"
+			args = append(args, string(t))
+		}
+		where = append(where, fmt.Sprintf("type IN (%s)", strings.Join(ph, ",")))
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, owner_entity_id, agent_id, canonical_name, type, description,
+			aliases, embedding, attributes, mention_count, last_mentioned_at, created_at, updated_at
+		FROM entities %s ORDER BY mention_count DESC LIMIT ? OFFSET ?`,
+		whereClause)
+	args = append(args, limit, query.Offset)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entities []*Entity
+	for rows.Next() {
+		e, err := scanEntityFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
+func (s *SQLiteStore) UpdateEntity(ctx context.Context, id string, updates map[string]any) (*Entity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var setClauses []string
+	var args []any
+
+	for k, v := range updates {
+		setClauses = append(setClauses, k+" = ?")
+		args = append(args, v)
+	}
+	setClauses = append(setClauses, "updated_at = ?")
+	args = append(args, time.Now().UTC().Format(time.RFC3339))
+	args = append(args, id)
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE entities SET %s WHERE id = ?", strings.Join(setClauses, ", ")),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetEntity(ctx, id)
+}
+
+func (s *SQLiteStore) UpdateEntityMentionCount(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE entities SET mention_count = mention_count + 1, last_mentioned_at = ?, updated_at = ? WHERE id = ?",
+		now, now, id)
+	return err
+}
+
+func (s *SQLiteStore) AddEntityAlias(ctx context.Context, id, alias string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var aliasesStr string
+	err := s.db.QueryRowContext(ctx, "SELECT aliases FROM entities WHERE id = ?", id).Scan(&aliasesStr)
+	if err != nil {
+		return err
+	}
+
+	var aliases []string
+	json.Unmarshal([]byte(aliasesStr), &aliases)
+
+	for _, a := range aliases {
+		if a == alias {
+			return nil
+		}
+	}
+
+	aliases = append(aliases, alias)
+	newAliases, _ := json.Marshal(aliases)
+
+	_, err = s.db.ExecContext(ctx,
+		"UPDATE entities SET aliases = ?, updated_at = ? WHERE id = ?",
+		string(newAliases), time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteEntity(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM entities WHERE id = ?", id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteAllEntitiesForOwner(ctx context.Context, ownerEntityID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM entities WHERE owner_entity_id = ?", ownerEntityID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+func (s *SQLiteStore) CreateEntityMention(ctx context.Context, mention *EntityMention) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if mention.ID == "" {
+		mention.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO entity_mentions (id, entity_id, memory_id, mention_text, confidence, context_snippet, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		mention.ID, mention.EntityID, mention.MemoryID, mention.MentionText,
+		mention.Confidence, mention.ContextSnippet, now)
+	return err
+}
+
+func (s *SQLiteStore) GetEntityMentions(ctx context.Context, entityID string, limit int) ([]*EntityMention, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, memory_id, mention_text, confidence, context_snippet, created_at
+		FROM entity_mentions WHERE entity_id = ? ORDER BY created_at DESC LIMIT ?`,
+		entityID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mentions []*EntityMention
+	for rows.Next() {
+		var m EntityMention
+		var createdStr string
+		if err := rows.Scan(&m.ID, &m.EntityID, &m.MemoryID, &m.MentionText,
+			&m.Confidence, &m.ContextSnippet, &createdStr); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		mentions = append(mentions, &m)
+	}
+	return mentions, nil
+}
+
+func (s *SQLiteStore) GetMemoryEntities(ctx context.Context, memoryID string) ([]*Entity, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT e.id, e.owner_entity_id, e.agent_id, e.canonical_name, e.type, e.description,
+			e.aliases, e.embedding, e.attributes, e.mention_count, e.last_mentioned_at, e.created_at, e.updated_at
+		FROM entities e
+		JOIN entity_mentions em ON em.entity_id = e.id
+		WHERE em.memory_id = ?`, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entities []*Entity
+	for rows.Next() {
+		e, err := scanEntityFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		entities = append(entities, e)
+	}
+	return entities, nil
+}
+
+// --- Relationship CRUD ---
+
+func (s *SQLiteStore) CreateRelationship(ctx context.Context, rel *Relationship) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if rel.ID == "" {
+		rel.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	attrs, _ := rel.Attributes.Value()
+	bidir := 0
+	if rel.IsBidirectional {
+		bidir = 1
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO relationships (id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+			relationship_type, description, strength, confidence, is_bidirectional,
+			evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rel.ID, rel.OwnerEntityID, rel.AgentID, rel.SourceEntityID, rel.TargetEntityID,
+		rel.RelationshipType, rel.Description, rel.Strength, rel.Confidence, bidir,
+		rel.EvidenceCount, attrs, now, now, now, now)
+	return err
+}
+
+func (s *SQLiteStore) GetRelationship(ctx context.Context, id string) (*Relationship, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+			relationship_type, description, strength, confidence, is_bidirectional,
+			evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+		FROM relationships WHERE id = ?`, id)
+	return scanRelationship(row)
+}
+
+func (s *SQLiteStore) FindRelationship(ctx context.Context, ownerEntityID, sourceID, targetID, relType string) (*Relationship, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+			relationship_type, description, strength, confidence, is_bidirectional,
+			evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+		FROM relationships
+		WHERE owner_entity_id = ? AND source_entity_id = ? AND target_entity_id = ? AND relationship_type = ?`,
+		ownerEntityID, sourceID, targetID, relType)
+	rel, err := scanRelationship(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return rel, err
+}
+
+func (s *SQLiteStore) GetEntityRelationships(ctx context.Context, ownerEntityID, entityID, direction string) ([]*Relationship, error) {
+	var q string
+	var args []any
+
+	switch direction {
+	case "outgoing":
+		q = `SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+				relationship_type, description, strength, confidence, is_bidirectional,
+				evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+			FROM relationships WHERE owner_entity_id = ? AND source_entity_id = ?`
+		args = []any{ownerEntityID, entityID}
+	case "incoming":
+		q = `SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+				relationship_type, description, strength, confidence, is_bidirectional,
+				evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+			FROM relationships WHERE owner_entity_id = ? AND target_entity_id = ?`
+		args = []any{ownerEntityID, entityID}
+	default:
+		q = `SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+				relationship_type, description, strength, confidence, is_bidirectional,
+				evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+			FROM relationships WHERE owner_entity_id = ? AND (source_entity_id = ? OR target_entity_id = ?)`
+		args = []any{ownerEntityID, entityID, entityID}
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanRelationships(rows)
+}
+
+func (s *SQLiteStore) QueryRelationships(ctx context.Context, query RelationshipQuery) ([]*Relationship, error) {
+	var where []string
+	var args []any
+
+	if query.OwnerEntityID != "" {
+		where = append(where, "owner_entity_id = ?")
+		args = append(args, query.OwnerEntityID)
+	}
+	if query.EntityID != "" {
+		where = append(where, "(source_entity_id = ? OR target_entity_id = ?)")
+		args = append(args, query.EntityID, query.EntityID)
+	}
+	if len(query.RelationshipTypes) > 0 {
+		ph := make([]string, len(query.RelationshipTypes))
+		for i, t := range query.RelationshipTypes {
+			ph[i] = "?"
+			args = append(args, t)
+		}
+		where = append(where, fmt.Sprintf("relationship_type IN (%s)", strings.Join(ph, ",")))
+	}
+	if query.MinStrength > 0 {
+		where = append(where, "strength >= ?")
+		args = append(args, query.MinStrength)
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, owner_entity_id, agent_id, source_entity_id, target_entity_id,
+			relationship_type, description, strength, confidence, is_bidirectional,
+			evidence_count, attributes, first_seen_at, last_seen_at, created_at, updated_at
+		FROM relationships %s ORDER BY strength DESC LIMIT ? OFFSET ?`,
+		whereClause)
+	args = append(args, limit, query.Offset)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRelationships(rows)
+}
+
+func (s *SQLiteStore) UpdateRelationship(ctx context.Context, id string, updates map[string]any) (*Relationship, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var setClauses []string
+	var args []any
+	for k, v := range updates {
+		setClauses = append(setClauses, k+" = ?")
+		args = append(args, v)
+	}
+	setClauses = append(setClauses, "updated_at = ?")
+	args = append(args, time.Now().UTC().Format(time.RFC3339))
+	args = append(args, id)
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE relationships SET %s WHERE id = ?", strings.Join(setClauses, ", ")),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetRelationship(ctx, id)
+}
+
+func (s *SQLiteStore) IncrementRelationshipEvidence(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE relationships SET evidence_count = evidence_count + 1, last_seen_at = ?, updated_at = ? WHERE id = ?",
+		now, now, id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteRelationship(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM relationships WHERE id = ?", id)
+	return err
+}
+
+func (s *SQLiteStore) CreateRelationshipEvidence(ctx context.Context, evidence *RelationshipEvidence) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if evidence.ID == "" {
+		evidence.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO relationship_evidence (id, relationship_id, memory_id, evidence_text, confidence, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		evidence.ID, evidence.RelationshipID, evidence.MemoryID,
+		evidence.EvidenceText, evidence.Confidence, now)
+	return err
+}
+
+func (s *SQLiteStore) GetRelationshipEvidence(ctx context.Context, relationshipID string, limit int) ([]*RelationshipEvidence, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, relationship_id, memory_id, evidence_text, confidence, created_at
+		FROM relationship_evidence WHERE relationship_id = ? ORDER BY created_at DESC LIMIT ?`,
+		relationshipID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var evidence []*RelationshipEvidence
+	for rows.Next() {
+		var e RelationshipEvidence
+		var createdStr string
+		if err := rows.Scan(&e.ID, &e.RelationshipID, &e.MemoryID,
+			&e.EvidenceText, &e.Confidence, &createdStr); err != nil {
+			return nil, err
+		}
+		e.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		evidence = append(evidence, &e)
+	}
+	return evidence, nil
+}
+
+func (s *SQLiteStore) GetRelationshipPath(ctx context.Context, ownerEntityID, fromEntityID, toEntityID string, maxDepth int) ([]string, error) {
+	if fromEntityID == toEntityID {
+		return []string{fromEntityID}, nil
+	}
+
+	visited := map[string]bool{fromEntityID: true}
+	parent := map[string]string{}
+	queue := []string{fromEntityID}
+
+	for depth := 0; depth < maxDepth && len(queue) > 0; depth++ {
+		nextQueue := make([]string, 0)
+
+		for _, current := range queue {
+			rels, err := s.GetEntityRelationships(ctx, ownerEntityID, current, "both")
+			if err != nil {
+				continue
+			}
+
+			for _, rel := range rels {
+				var targetID string
+				if rel.SourceEntityID == current {
+					targetID = rel.TargetEntityID
+				} else {
+					targetID = rel.SourceEntityID
+				}
+
+				if targetID == toEntityID {
+					path := []string{toEntityID}
+					curr := current
+					for curr != fromEntityID {
+						path = append([]string{curr}, path...)
+						curr = parent[curr]
+					}
+					return append([]string{fromEntityID}, path...), nil
+				}
+
+				if !visited[targetID] {
+					visited[targetID] = true
+					parent[targetID] = current
+					nextQueue = append(nextQueue, targetID)
+				}
+			}
+		}
+
+		queue = nextQueue
+	}
+
+	return nil, fmt.Errorf("no path found")
+}
+
+func (s *SQLiteStore) DeleteAllRelationshipsForOwner(ctx context.Context, ownerEntityID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM relationships WHERE owner_entity_id = ?", ownerEntityID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
+}
+
+// --- Schema CRUD ---
+
+func (s *SQLiteStore) CreateSchema(ctx context.Context, schema *ExtractionSchema) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if schema.ID == "" {
+		schema.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	schemaDef, _ := json.Marshal(schema.SchemaDefinition)
+	isActive := 0
+	if schema.IsActive {
+		isActive = 1
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO extraction_schemas (id, entity_id, name, description, version, schema_definition, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		schema.ID, schema.EntityID, schema.Name, schema.Description, schema.Version,
+		string(schemaDef), isActive, now, now)
+	if err != nil {
+		return err
+	}
+
+	schema.CreatedAt, _ = time.Parse(time.RFC3339, now)
+	schema.UpdatedAt = schema.CreatedAt
+	return nil
+}
+
+func (s *SQLiteStore) GetSchema(ctx context.Context, id string) (*ExtractionSchema, error) {
+	var es ExtractionSchema
+	var schemaDefStr string
+	var isActive int
+	var createdStr, updatedStr string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, name, description, version, schema_definition, is_active, created_at, updated_at
+		FROM extraction_schemas WHERE id = ?`, id).Scan(
+		&es.ID, &es.EntityID, &es.Name, &es.Description, &es.Version,
+		&schemaDefStr, &isActive, &createdStr, &updatedStr)
+	if err != nil {
+		return nil, err
+	}
+
+	es.IsActive = isActive != 0
+	json.Unmarshal([]byte(schemaDefStr), &es.SchemaDefinition)
+	es.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	es.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	return &es, nil
+}
+
+func (s *SQLiteStore) GetSchemaByName(ctx context.Context, entityID, name string) (*ExtractionSchema, error) {
+	var es ExtractionSchema
+	var schemaDefStr string
+	var isActive int
+	var createdStr, updatedStr string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, name, description, version, schema_definition, is_active, created_at, updated_at
+		FROM extraction_schemas WHERE entity_id = ? AND name = ?`, entityID, name).Scan(
+		&es.ID, &es.EntityID, &es.Name, &es.Description, &es.Version,
+		&schemaDefStr, &isActive, &createdStr, &updatedStr)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	es.IsActive = isActive != 0
+	json.Unmarshal([]byte(schemaDefStr), &es.SchemaDefinition)
+	es.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	es.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	return &es, nil
+}
+
+func (s *SQLiteStore) QuerySchemas(ctx context.Context, query SchemaQuery) ([]*ExtractionSchema, error) {
+	var where []string
+	var args []any
+
+	if query.EntityID != "" {
+		where = append(where, "entity_id = ?")
+		args = append(args, query.EntityID)
+	}
+	if query.ActiveOnly {
+		where = append(where, "is_active = 1")
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, entity_id, name, description, version, schema_definition, is_active, created_at, updated_at
+		FROM extraction_schemas %s ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		whereClause)
+	args = append(args, limit, query.Offset)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var schemas []*ExtractionSchema
+	for rows.Next() {
+		var es ExtractionSchema
+		var schemaDefStr string
+		var isActive int
+		var createdStr, updatedStr string
+		if err := rows.Scan(&es.ID, &es.EntityID, &es.Name, &es.Description, &es.Version,
+			&schemaDefStr, &isActive, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		es.IsActive = isActive != 0
+		json.Unmarshal([]byte(schemaDefStr), &es.SchemaDefinition)
+		es.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		es.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+		schemas = append(schemas, &es)
+	}
+	return schemas, nil
+}
+
+func (s *SQLiteStore) UpdateSchema(ctx context.Context, id string, updates map[string]any) (*ExtractionSchema, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var setClauses []string
+	var args []any
+
+	for k, v := range updates {
+		if k == "schema_definition" {
+			if def, ok := v.(map[string]any); ok {
+				jsonBytes, _ := json.Marshal(def)
+				setClauses = append(setClauses, "schema_definition = ?")
+				args = append(args, string(jsonBytes))
+				continue
+			}
+		}
+		if k == "is_active" {
+			if active, ok := v.(bool); ok {
+				val := 0
+				if active {
+					val = 1
+				}
+				setClauses = append(setClauses, "is_active = ?")
+				args = append(args, val)
+				continue
+			}
+		}
+		setClauses = append(setClauses, k+" = ?")
+		args = append(args, v)
+	}
+
+	setClauses = append(setClauses, "updated_at = ?")
+	args = append(args, time.Now().UTC().Format(time.RFC3339))
+	args = append(args, id)
+
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE extraction_schemas SET %s WHERE id = ?", strings.Join(setClauses, ", ")),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetSchema(ctx, id)
+}
+
+func (s *SQLiteStore) DeleteSchema(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM extraction_schemas WHERE id = ?", id)
+	return err
+}
+
+// --- Custom Extraction CRUD ---
+
+func (s *SQLiteStore) CreateCustomExtraction(ctx context.Context, extraction *CustomExtraction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if extraction.ID == "" {
+		extraction.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	dataJSON, _ := json.Marshal(extraction.ExtractedData)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO custom_extractions (id, entity_id, memory_id, schema_id, extracted_data, extraction_provider, extraction_model, confidence, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		extraction.ID, extraction.EntityID, extraction.MemoryID, extraction.SchemaID,
+		string(dataJSON), extraction.ExtractionProvider, extraction.ExtractionModel,
+		extraction.Confidence, now)
+	if err != nil {
+		return err
+	}
+
+	extraction.CreatedAt, _ = time.Parse(time.RFC3339, now)
+	return nil
+}
+
+func (s *SQLiteStore) GetCustomExtraction(ctx context.Context, id string) (*CustomExtraction, error) {
+	var ce CustomExtraction
+	var dataStr string
+	var createdStr string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, memory_id, schema_id, extracted_data, extraction_provider, extraction_model, confidence, created_at
+		FROM custom_extractions WHERE id = ?`, id).Scan(
+		&ce.ID, &ce.EntityID, &ce.MemoryID, &ce.SchemaID,
+		&dataStr, &ce.ExtractionProvider, &ce.ExtractionModel,
+		&ce.Confidence, &createdStr)
+	if err != nil {
+		return nil, err
+	}
+
+	json.Unmarshal([]byte(dataStr), &ce.ExtractedData)
+	ce.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	return &ce, nil
+}
+
+func (s *SQLiteStore) GetCustomExtractionsByMemory(ctx context.Context, memoryID string) ([]*CustomExtraction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, memory_id, schema_id, extracted_data, extraction_provider, extraction_model, confidence, created_at
+		FROM custom_extractions WHERE memory_id = ? ORDER BY created_at DESC`, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanCustomExtractions(rows)
+}
+
+func (s *SQLiteStore) QueryCustomExtractions(ctx context.Context, query CustomExtractionQuery) ([]*CustomExtraction, error) {
+	var where []string
+	var args []any
+
+	if query.EntityID != "" {
+		where = append(where, "entity_id = ?")
+		args = append(args, query.EntityID)
+	}
+	if query.MemoryID != "" {
+		where = append(where, "memory_id = ?")
+		args = append(args, query.MemoryID)
+	}
+	if query.SchemaID != "" {
+		where = append(where, "schema_id = ?")
+		args = append(args, query.SchemaID)
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	q := fmt.Sprintf(
+		`SELECT id, entity_id, memory_id, schema_id, extracted_data, extraction_provider, extraction_model, confidence, created_at
+		FROM custom_extractions %s ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		whereClause)
+	args = append(args, limit, query.Offset)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanCustomExtractions(rows)
+}
+
+func (s *SQLiteStore) DeleteCustomExtraction(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM custom_extractions WHERE id = ?", id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM custom_extractions WHERE schema_id = ?", schemaID)
+	return err
+}
+
+// --- Scan Helpers ---
+
+func (s *SQLiteStore) getMemoryUnlocked(ctx context.Context, id string) (*Memory, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, content, content_hash, embedding,
+			memory_type, tags, importance, confidence, stability,
+			access_count, last_accessed_at, state, created_at, updated_at,
+			expires_at, deleted_at, version, source, session_id,
+			extraction_provider, extraction_model, importance_factors, confidence_factors
+		FROM memories WHERE id = ?`, id)
+	return scanMemory(row)
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanMemory(row scanner) (*Memory, error) {
+	var m Memory
+	var tagsStr, impFactorsStr, confFactorsStr string
+	var lastAccessedStr, createdStr, updatedStr sql.NullString
+	var expiresStr, deletedStr sql.NullString
+	var memType, stateStr string
+
+	err := row.Scan(
+		&m.ID, &m.EntityID, &m.AgentID, &m.Content, &m.Hash, &m.Embedding,
+		&memType, &tagsStr, &m.Importance, &m.Confidence, &m.Stability,
+		&m.AccessCount, &lastAccessedStr, &stateStr, &createdStr, &updatedStr,
+		&expiresStr, &deletedStr, &m.Version, &m.Source, &m.SessionID,
+		&m.ExtractionProvider, &m.ExtractionModel, &impFactorsStr, &confFactorsStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.Type = MemoryType(memType)
+	m.State = MemoryState(stateStr)
+
+	m.Tags.Scan(tagsStr)
+	m.ImportanceFactors.Scan(impFactorsStr)
+	m.ConfidenceFactors.Scan(confFactorsStr)
+
+	if createdStr.Valid {
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr.String)
+	}
+	if updatedStr.Valid {
+		m.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr.String)
+	}
+	if lastAccessedStr.Valid {
+		t, _ := time.Parse(time.RFC3339, lastAccessedStr.String)
+		m.LastAccessedAt = &t
+	}
+	if expiresStr.Valid {
+		t, _ := time.Parse(time.RFC3339, expiresStr.String)
+		m.ExpiresAt = &t
+	}
+	if deletedStr.Valid {
+		t, _ := time.Parse(time.RFC3339, deletedStr.String)
+		m.DeletedAt = &t
+	}
+
+	return &m, nil
+}
+
+func scanMemories(rows *sql.Rows) ([]*Memory, error) {
+	var memories []*Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		memories = append(memories, m)
+	}
+	return memories, nil
+}
+
+func scanEntity(row scanner) (*Entity, error) {
+	var e Entity
+	var aliasesStr, attrsStr string
+	var lastMentionedStr, createdStr, updatedStr sql.NullString
+	var entityType string
+
+	err := row.Scan(
+		&e.ID, &e.OwnerEntityID, &e.AgentID, &e.CanonicalName,
+		&entityType, &e.Description, &aliasesStr, &e.Embedding,
+		&attrsStr, &e.MentionCount, &lastMentionedStr, &createdStr, &updatedStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	e.Type = EntityType(entityType)
+	e.Aliases.Scan(aliasesStr)
+	e.Attributes.Scan(attrsStr)
+
+	if createdStr.Valid {
+		e.CreatedAt, _ = time.Parse(time.RFC3339, createdStr.String)
+	}
+	if updatedStr.Valid {
+		e.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr.String)
+	}
+	if lastMentionedStr.Valid {
+		t, _ := time.Parse(time.RFC3339, lastMentionedStr.String)
+		e.LastMentionedAt = &t
+	}
+
+	return &e, nil
+}
+
+func scanEntityFromRows(rows *sql.Rows) (*Entity, error) {
+	return scanEntity(rows)
+}
+
+func scanRelationship(row scanner) (*Relationship, error) {
+	var r Relationship
+	var attrsStr string
+	var bidir int
+	var firstSeenStr, lastSeenStr, createdStr, updatedStr string
+
+	err := row.Scan(
+		&r.ID, &r.OwnerEntityID, &r.AgentID, &r.SourceEntityID, &r.TargetEntityID,
+		&r.RelationshipType, &r.Description, &r.Strength, &r.Confidence, &bidir,
+		&r.EvidenceCount, &attrsStr, &firstSeenStr, &lastSeenStr, &createdStr, &updatedStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	r.IsBidirectional = bidir != 0
+	r.Attributes.Scan(attrsStr)
+	r.FirstSeenAt, _ = time.Parse(time.RFC3339, firstSeenStr)
+	r.LastSeenAt, _ = time.Parse(time.RFC3339, lastSeenStr)
+	r.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+
+	return &r, nil
+}
+
+func scanRelationships(rows *sql.Rows) ([]*Relationship, error) {
+	var rels []*Relationship
+	for rows.Next() {
+		r, err := scanRelationship(rows)
+		if err != nil {
+			return nil, err
+		}
+		rels = append(rels, r)
+	}
+	return rels, nil
+}
+
+func scanCustomExtractions(rows *sql.Rows) ([]*CustomExtraction, error) {
+	var extractions []*CustomExtraction
+	for rows.Next() {
+		var ce CustomExtraction
+		var dataStr, createdStr string
+		if err := rows.Scan(&ce.ID, &ce.EntityID, &ce.MemoryID, &ce.SchemaID,
+			&dataStr, &ce.ExtractionProvider, &ce.ExtractionModel,
+			&ce.Confidence, &createdStr); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(dataStr), &ce.ExtractedData)
+		ce.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		extractions = append(extractions, &ce)
+	}
+	return extractions, nil
+}
+
+// decodeEmbedding converts bytes from SQLite BLOB to float32 slice.
+func decodeEmbedding(data []byte) []float32 {
+	if len(data) == 0 || len(data)%4 != 0 {
+		return nil
+	}
+	result := make([]float32, len(data)/4)
+	for i := range result {
+		bits := uint32(data[i*4+0]) |
+			uint32(data[i*4+1])<<8 |
+			uint32(data[i*4+2])<<16 |
+			uint32(data[i*4+3])<<24
+		result[i] = math.Float32frombits(bits)
+	}
+	return result
+}

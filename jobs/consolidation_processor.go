@@ -1,0 +1,357 @@
+package jobs
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"math"
+	"strings"
+
+	"github.com/keyoku-ai/keyoku-embedded/llm"
+	"github.com/keyoku-ai/keyoku-embedded/storage"
+)
+
+// ConsolidationProcessor finds groups of similar memories and merges them.
+type ConsolidationProcessor struct {
+	store  storage.Store
+	llm    llm.Provider
+	logger *slog.Logger
+	config ConsolidationJobConfig
+	useLLM bool
+}
+
+// ConsolidationJobConfig holds configuration for consolidation processing.
+type ConsolidationJobConfig struct {
+	SimilarityThreshold    float64
+	MinGroupSize           int
+	BatchSize              int
+	MaxMergeSize           int
+	RespectAgentBoundaries bool
+}
+
+// DefaultConsolidationJobConfig returns default consolidation configuration.
+func DefaultConsolidationJobConfig() ConsolidationJobConfig {
+	return ConsolidationJobConfig{
+		SimilarityThreshold:    0.85,
+		MinGroupSize:           2,
+		BatchSize:              500,
+		MaxMergeSize:           5,
+		RespectAgentBoundaries: false,
+	}
+}
+
+// NewConsolidationProcessor creates a new consolidation processor.
+func NewConsolidationProcessor(store storage.Store, llmProvider llm.Provider, logger *slog.Logger, config ConsolidationJobConfig) *ConsolidationProcessor {
+	if config.SimilarityThreshold <= 0 {
+		config.SimilarityThreshold = 0.85
+	}
+	if config.MinGroupSize <= 0 {
+		config.MinGroupSize = 2
+	}
+	if config.BatchSize <= 0 {
+		config.BatchSize = 500
+	}
+	if config.MaxMergeSize <= 0 {
+		config.MaxMergeSize = 5
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &ConsolidationProcessor{
+		store:  store,
+		llm:    llmProvider,
+		logger: logger.With("processor", "consolidation"),
+		config: config,
+		useLLM: llmProvider != nil,
+	}
+}
+
+func (p *ConsolidationProcessor) Type() JobType { return JobTypeConsolidation }
+
+func (p *ConsolidationProcessor) Process(ctx context.Context) (*JobResult, error) {
+	p.logger.Info("starting consolidation processing")
+
+	entities, err := p.store.GetAllEntities(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get entities: %w", err)
+	}
+
+	var totalProcessed, totalConsolidated, groupsFound int
+
+	for _, entityID := range entities {
+		groups, err := p.findSimilarGroups(ctx, entityID)
+		if err != nil {
+			p.logger.Error("failed to find similar groups", "entity", entityID, "error", err)
+			continue
+		}
+
+		groupsFound += len(groups)
+
+		for _, group := range groups {
+			totalProcessed += len(group)
+
+			consolidated, err := p.consolidateGroup(ctx, group)
+			if err != nil {
+				p.logger.Error("failed to consolidate group", "entity", entityID, "error", err)
+				continue
+			}
+			if consolidated {
+				totalConsolidated++
+			}
+		}
+	}
+
+	p.logger.Info("consolidation complete",
+		"entities_processed", len(entities),
+		"groups_found", groupsFound,
+		"memories_processed", totalProcessed,
+		"consolidations", totalConsolidated,
+	)
+
+	return &JobResult{
+		ItemsProcessed: totalProcessed,
+		ItemsAffected:  totalConsolidated,
+		Details: map[string]any{
+			"entities_processed": len(entities),
+			"groups_found":       groupsFound,
+		},
+	}, nil
+}
+
+func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID string) ([][]*storage.Memory, error) {
+	query := storage.MemoryQuery{
+		EntityID:   entityID,
+		States:     []storage.MemoryState{storage.StateStale},
+		Limit:      p.config.BatchSize,
+		OrderBy:    "importance",
+		Descending: true,
+	}
+
+	memories, err := p.store.QueryMemories(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(memories) < p.config.MinGroupSize {
+		return nil, nil
+	}
+
+	groups := make([][]*storage.Memory, 0)
+	processed := make(map[string]bool)
+
+	// For embedded, we don't have float32 embeddings directly on Memory —
+	// they're stored as byte blobs. We'd need to decode them to use FindSimilar.
+	// For now, use the store's FindSimilar which handles the HNSW lookup.
+	for _, mem := range memories {
+		if processed[mem.ID] || len(mem.Embedding) == 0 {
+			continue
+		}
+
+		// Decode embedding from blob
+		embedding := decodeEmbeddingBlob(mem.Embedding)
+		if len(embedding) == 0 {
+			continue
+		}
+
+		similar, err := p.store.FindSimilar(ctx, embedding, entityID, p.config.MaxMergeSize, p.config.SimilarityThreshold)
+		if err != nil {
+			continue
+		}
+
+		if len(similar) >= p.config.MinGroupSize {
+			group := make([]*storage.Memory, 0, len(similar))
+			for _, s := range similar {
+				if s.Memory.State == storage.StateStale && !processed[s.Memory.ID] {
+					group = append(group, s.Memory)
+					processed[s.Memory.ID] = true
+				}
+			}
+			if len(group) >= p.config.MinGroupSize {
+				groups = append(groups, group)
+			}
+		}
+	}
+
+	return groups, nil
+}
+
+func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*storage.Memory) (bool, error) {
+	if len(group) < 2 {
+		return false, nil
+	}
+
+	// Select primary (highest importance)
+	primary := group[0]
+	for _, mem := range group[1:] {
+		if mem.Importance > primary.Importance {
+			primary = mem
+		}
+	}
+
+	var consolidatedContent string
+	var maxConfidence float64
+	var totalImportance float64
+
+	for _, mem := range group {
+		totalImportance += mem.Importance
+		if mem.Confidence > maxConfidence {
+			maxConfidence = mem.Confidence
+		}
+	}
+
+	// Try LLM consolidation
+	if p.useLLM && p.llm != nil {
+		contents := make([]string, len(group))
+		for i, mem := range group {
+			contents[i] = mem.Content
+		}
+		resp, err := p.llm.ConsolidateMemories(ctx, llm.ConsolidationRequest{
+			Memories: contents,
+		})
+		if err != nil {
+			p.logger.Warn("LLM consolidation failed, falling back to text-based", "error", err)
+		} else if resp.Content != "" {
+			consolidatedContent = resp.Content
+			if resp.Confidence > maxConfidence {
+				maxConfidence = resp.Confidence
+			}
+		}
+	}
+
+	// Fallback to text-based
+	if consolidatedContent == "" {
+		consolidatedContent = textBasedConsolidate(primary, group)
+	}
+
+	// Boosted importance
+	avgImportance := totalImportance / float64(len(group))
+	boostedImportance := avgImportance * (1 + 0.1*float64(len(group)-1))
+	if boostedImportance > 1.0 {
+		boostedImportance = 1.0
+	}
+
+	// Update primary
+	_, err := p.store.UpdateMemory(ctx, primary.ID, storage.MemoryUpdate{
+		Content:    &consolidatedContent,
+		Importance: &boostedImportance,
+		Confidence: &maxConfidence,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	// Reactivate primary
+	activeState := storage.StateActive
+	p.store.UpdateMemory(ctx, primary.ID, storage.MemoryUpdate{State: &activeState})
+
+	// Log history
+	p.store.LogHistory(ctx, &storage.HistoryEntry{
+		MemoryID:  primary.ID,
+		Operation: "consolidation",
+		Changes: map[string]any{
+			"merged_from":      getMemoryIDs(group),
+			"original_content": primary.Content,
+			"new_content":      consolidatedContent,
+		},
+		Reason: fmt.Sprintf("consolidated %d similar memories", len(group)),
+	})
+
+	// Soft-delete the others
+	for _, mem := range group {
+		if mem.ID != primary.ID {
+			p.store.DeleteMemory(ctx, mem.ID, false)
+		}
+	}
+
+	return true, nil
+}
+
+// --- helpers ---
+
+func textBasedConsolidate(primary *storage.Memory, group []*storage.Memory) string {
+	var contentParts []string
+	for _, mem := range group {
+		if mem.ID == primary.ID {
+			contentParts = append(contentParts, mem.Content)
+		} else {
+			if !isContentRedundant(primary.Content, mem.Content) {
+				unique := extractUniqueContent(primary.Content, mem.Content)
+				if unique != "" {
+					contentParts = append(contentParts, unique)
+				}
+			}
+		}
+	}
+	return strings.Join(contentParts, " ")
+}
+
+func isContentRedundant(content1, content2 string) bool {
+	c1 := strings.ToLower(strings.TrimSpace(content1))
+	c2 := strings.ToLower(strings.TrimSpace(content2))
+
+	if strings.Contains(c1, c2) || strings.Contains(c2, c1) {
+		return true
+	}
+
+	words1 := strings.Fields(c1)
+	words2 := strings.Fields(c2)
+	if len(words2) == 0 {
+		return true
+	}
+
+	wordSet := make(map[string]bool)
+	for _, w := range words1 {
+		wordSet[w] = true
+	}
+	matchCount := 0
+	for _, w := range words2 {
+		if wordSet[w] {
+			matchCount++
+		}
+	}
+	return float64(matchCount)/float64(len(words2)) >= 0.8
+}
+
+func extractUniqueContent(content1, content2 string) string {
+	c1Words := strings.Fields(strings.ToLower(content1))
+	c2Words := strings.Fields(content2)
+
+	wordSet := make(map[string]bool)
+	for _, w := range c1Words {
+		wordSet[strings.ToLower(w)] = true
+	}
+
+	var unique []string
+	for _, w := range c2Words {
+		if !wordSet[strings.ToLower(w)] {
+			unique = append(unique, w)
+		}
+	}
+	if len(unique) < 3 {
+		return ""
+	}
+	return strings.Join(unique, " ")
+}
+
+func getMemoryIDs(memories []*storage.Memory) []string {
+	ids := make([]string, len(memories))
+	for i, m := range memories {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// decodeEmbeddingBlob converts a byte blob to float32 slice.
+func decodeEmbeddingBlob(data []byte) []float32 {
+	if len(data) == 0 || len(data)%4 != 0 {
+		return nil
+	}
+	result := make([]float32, len(data)/4)
+	for i := range result {
+		bits := uint32(data[i*4+0]) |
+			uint32(data[i*4+1])<<8 |
+			uint32(data[i*4+2])<<16 |
+			uint32(data[i*4+3])<<24
+		result[i] = math.Float32frombits(bits)
+	}
+	return result
+}
