@@ -12,12 +12,16 @@ import (
 type StateManager struct {
 	store    storage.Store
 	provider llm.Provider
+	emitter  EventEmitter
 }
 
 // NewStateManager creates a new state manager.
 func NewStateManager(store storage.Store, provider llm.Provider) *StateManager {
 	return &StateManager{store: store, provider: provider}
 }
+
+// SetEmitter sets the event emitter callback.
+func (sm *StateManager) SetEmitter(emitter EventEmitter) { sm.emitter = emitter }
 
 // StateUpdateResult contains the result of a state update.
 type StateUpdateResult struct {
@@ -106,6 +110,19 @@ func (sm *StateManager) Update(ctx context.Context, entityID, agentID, schemaNam
 	// Update the state
 	if err := sm.store.UpdateAgentState(ctx, agentState.ID, resp.ExtractedState); err != nil {
 		return nil, fmt.Errorf("failed to update agent state: %w", err)
+	}
+
+	// Emit state changed event
+	if sm.emitter != nil {
+		sm.emitter("state.changed", entityID, agentID, map[string]any{
+			"schema_name":     schemaName,
+			"changed_fields":  resp.ChangedFields,
+			"previous_state":  agentState.CurrentState,
+			"new_state":       resp.ExtractedState,
+			"confidence":      resp.Confidence,
+			"reasoning":       resp.Reasoning,
+			"suggested_action": resp.SuggestedAction,
+		})
 	}
 
 	return result, nil

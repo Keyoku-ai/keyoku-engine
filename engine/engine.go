@@ -29,6 +29,10 @@ func DefaultEngineConfig() EngineConfig {
 	}
 }
 
+// EventEmitter is a callback for emitting events from the engine.
+// Parameters: eventType, entityID, agentID, data.
+type EventEmitter func(eventType string, entityID string, agentID string, data map[string]any)
+
 // Engine is the main memory processing engine.
 type Engine struct {
 	provider llm.Provider
@@ -46,6 +50,7 @@ type Engine struct {
 
 	tokenBudget         *TokenBudget
 	significanceScorer  *SignificanceScorer
+	emitter             EventEmitter
 }
 
 // NewEngine creates a new memory engine with the given dependencies.
@@ -91,6 +96,16 @@ func NewEngine(
 		graph:                graphEngine,
 		tokenBudget:          budget,
 		significanceScorer:   NewSignificanceScorer(sigConfig),
+	}
+}
+
+// SetEmitter sets the event emitter callback.
+func (e *Engine) SetEmitter(emitter EventEmitter) { e.emitter = emitter }
+
+// emit fires an event if an emitter is set.
+func (e *Engine) emit(eventType string, entityID string, agentID string, data map[string]any) {
+	if e.emitter != nil {
+		e.emitter(eventType, entityID, agentID, data)
 	}
 }
 
@@ -317,6 +332,11 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		if err != nil {
 			return MemoryDetail{}, fmt.Errorf("merge failed: %w", err)
 		}
+		e.emit("memory.merged", entityID, req.AgentID, map[string]any{
+			"memory":           merged,
+			"original_content": dupResult.ExistingMemory.Content,
+			"merged_content":   merged.Content,
+		})
 		return MemoryDetail{
 			ID:         merged.ID,
 			Content:    merged.Content,
@@ -343,6 +363,14 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 
 	if conflictResult != nil && conflictResult.HasConflict && len(conflictResult.Conflicts) > 0 {
 		conflict := conflictResult.Conflicts[0]
+		e.emit("conflict.detected", entityID, req.AgentID, map[string]any{
+			"new_content":      extracted.Content,
+			"existing_content": conflict.ExistingMemory.Content,
+			"conflict_type":    string(conflict.ConflictType),
+			"resolution":       string(conflict.Resolution),
+			"explanation":      conflict.Explanation,
+			"confidence":       conflict.Confidence,
+		})
 
 		switch conflict.Resolution {
 		case ResolutionUseNew:
@@ -429,6 +457,14 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		return MemoryDetail{}, err
 	}
 
+	e.emit("memory.created", entityID, req.AgentID, map[string]any{
+		"memory":     mem,
+		"content":    mem.Content,
+		"type":       string(mem.Type),
+		"importance": mem.Importance,
+		"sentiment":  mem.Sentiment,
+	})
+
 	// Log history
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  mem.ID,
@@ -479,6 +515,13 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 		return MemoryDetail{}, err
 	}
 
+	e.emit("memory.updated", entityID, targetMemory.AgentID, map[string]any{
+		"memory":      targetMemory,
+		"old_content": targetMemory.Content,
+		"new_content": newContent,
+		"reason":      update.Reason,
+	})
+
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  targetMemory.ID,
 		Operation: "update",
@@ -519,6 +562,12 @@ func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, simila
 	if err := e.store.DeleteMemory(ctx, targetMemory.ID, false); err != nil {
 		return MemoryDetail{}, err
 	}
+
+	e.emit("memory.deleted", entityID, targetMemory.AgentID, map[string]any{
+		"memory":  targetMemory,
+		"content": targetMemory.Content,
+		"reason":  del.Reason,
+	})
 
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  targetMemory.ID,
@@ -962,6 +1011,14 @@ func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID strin
 		if err != nil {
 			continue
 		}
+
+		e.emit("importance.changed", entityID, sim.Memory.AgentID, map[string]any{
+			"memory":         sim.Memory,
+			"old_importance": sim.Memory.Importance,
+			"new_importance": newImportance,
+			"reason":         resp.Reason,
+			"trigger":        newContent,
+		})
 
 		e.store.LogHistory(ctx, &storage.HistoryEntry{
 			MemoryID:  sim.Memory.ID,

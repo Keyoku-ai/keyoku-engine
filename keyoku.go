@@ -70,6 +70,8 @@ type Keyoku struct {
 	provider     llm.Provider
 	logger       *slog.Logger
 	stateManager *engine.StateManager
+	eventBus     *EventBus
+	watcher      *Watcher
 }
 
 // New creates a new Keyoku instance with the given configuration.
@@ -103,12 +105,16 @@ func New(cfg Config) (*Keyoku, error) {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
+	// Create event bus (async so handlers never block the hot path)
+	eventBus := NewEventBus(true)
+
 	k := &Keyoku{
 		store:        store,
 		emb:          emb,
 		provider:     provider,
 		logger:       logger,
 		stateManager: engine.NewStateManager(store, provider),
+		eventBus:     eventBus,
 	}
 
 	// Create engine
@@ -116,9 +122,15 @@ func New(cfg Config) (*Keyoku, error) {
 		ContextTurns: cfg.ContextTurns,
 	})
 
+	// Wire event emitter into all components
+	emitterFn := eventBus.emitterFunc()
+	k.engine.SetEmitter(emitterFn)
+	k.stateManager.SetEmitter(emitterFn)
+
 	// Create and start scheduler if enabled
 	if cfg.SchedulerEnabled {
 		k.scheduler = jobs.NewScheduler(logger, jobs.DefaultSchedules())
+		k.scheduler.SetEmitter(jobs.EventEmitter(emitterFn))
 		k.scheduler.RegisterProcessor(jobs.NewDecayProcessor(store, logger, jobs.DefaultDecayJobConfig()))
 		k.scheduler.RegisterProcessor(jobs.NewConsolidationProcessor(store, provider, logger, jobs.DefaultConsolidationJobConfig()))
 		k.scheduler.RegisterProcessor(jobs.NewArchivalProcessor(store, logger, jobs.DefaultArchivalJobConfig()))
@@ -134,6 +146,47 @@ func (k *Keyoku) SetStore(store storage.Store) {
 	k.store = store
 	k.engine = engine.NewEngine(k.provider, k.emb, store, engine.DefaultEngineConfig())
 	k.stateManager = engine.NewStateManager(store, k.provider)
+	// Re-wire emitter
+	if k.eventBus != nil {
+		emitterFn := k.eventBus.emitterFunc()
+		k.engine.SetEmitter(emitterFn)
+		k.stateManager.SetEmitter(emitterFn)
+	}
+}
+
+// --- Event API ---
+
+// OnEvent registers a handler for a specific event type.
+// Handlers are called asynchronously and never block the engine pipeline.
+func (k *Keyoku) OnEvent(eventType EventType, handler EventHandler) {
+	k.eventBus.On(eventType, handler)
+}
+
+// OnAnyEvent registers a handler that fires for all events.
+func (k *Keyoku) OnAnyEvent(handler EventHandler) {
+	k.eventBus.OnAny(handler)
+}
+
+// Events returns the event bus for advanced usage.
+func (k *Keyoku) Events() *EventBus {
+	return k.eventBus
+}
+
+// StartWatcher starts the proactive heartbeat watcher.
+// The watcher runs HeartbeatCheck on a tight interval and emits events
+// when action is needed — no polling required by the consumer.
+func (k *Keyoku) StartWatcher(config WatcherConfig) *Watcher {
+	if k.watcher != nil {
+		k.watcher.Stop()
+	}
+	k.watcher = newWatcher(k, config)
+	k.watcher.Start()
+	return k.watcher
+}
+
+// Watcher returns the active watcher, or nil if not started.
+func (k *Keyoku) Watcher() *Watcher {
+	return k.watcher
 }
 
 // --- RememberOption ---
@@ -470,6 +523,9 @@ func (as *AgentStateService) History(ctx context.Context, entityID, agentID, sch
 
 // Close closes the Keyoku instance and releases all resources.
 func (k *Keyoku) Close() error {
+	if k.watcher != nil {
+		k.watcher.Stop()
+	}
 	if k.scheduler != nil {
 		k.scheduler.Stop()
 	}

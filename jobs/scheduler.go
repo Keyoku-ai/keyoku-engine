@@ -40,6 +40,9 @@ type JobSchedule struct {
 	Enabled  bool
 }
 
+// EventEmitter is a callback for emitting events from the scheduler.
+type EventEmitter func(eventType string, entityID string, agentID string, data map[string]any)
+
 // Scheduler manages background jobs using in-memory timers.
 type Scheduler struct {
 	logger     *slog.Logger
@@ -51,6 +54,7 @@ type Scheduler struct {
 	wg         sync.WaitGroup
 	mu         sync.RWMutex
 	running    map[JobType]bool
+	emitter    EventEmitter
 }
 
 // DefaultSchedules returns the default job schedules.
@@ -83,6 +87,9 @@ func NewScheduler(logger *slog.Logger, schedules []JobSchedule) *Scheduler {
 		running:    make(map[JobType]bool),
 	}
 }
+
+// SetEmitter sets the event emitter callback.
+func (s *Scheduler) SetEmitter(emitter EventEmitter) { s.emitter = emitter }
 
 // RegisterProcessor registers a processor for a job type.
 func (s *Scheduler) RegisterProcessor(processor JobProcessor) {
@@ -225,11 +232,27 @@ func (s *Scheduler) executeJob(processor JobProcessor) {
 	duration := time.Since(startTime)
 	if err != nil {
 		logger.Error("job failed", "error", err, "duration_ms", duration.Milliseconds())
+		if s.emitter != nil {
+			s.emitter("job.failed", "", "", map[string]any{
+				"job_type":    string(processor.Type()),
+				"error":       err.Error(),
+				"duration_ms": duration.Milliseconds(),
+			})
+		}
 	} else {
 		logger.Info("job completed",
 			"duration_ms", duration.Milliseconds(),
 			"items_processed", result.ItemsProcessed,
 			"items_affected", result.ItemsAffected,
 		)
+		if s.emitter != nil && result.ItemsAffected > 0 {
+			s.emitter("job.completed", "", "", map[string]any{
+				"job_type":        string(processor.Type()),
+				"items_processed": result.ItemsProcessed,
+				"items_affected":  result.ItemsAffected,
+				"duration_ms":     duration.Milliseconds(),
+				"details":         result.Details,
+			})
+		}
 	}
 }
