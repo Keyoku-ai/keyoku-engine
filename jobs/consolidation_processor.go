@@ -201,11 +201,24 @@ func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*
 	// Try LLM consolidation
 	if p.useLLM && p.llm != nil {
 		contents := make([]string, len(group))
+		importanceScores := make([]float64, len(group))
+		sentimentValues := make([]float64, len(group))
 		for i, mem := range group {
 			contents[i] = mem.Content
+			importanceScores[i] = mem.Importance
+			sentimentValues[i] = mem.Sentiment
 		}
+
+		// Gather entity and relationship context
+		entityCtx, relCtx, impFactors := p.gatherConsolidationContext(ctx, group)
+
 		resp, err := p.llm.ConsolidateMemories(ctx, llm.ConsolidationRequest{
-			Memories: contents,
+			Memories:            contents,
+			EntityContext:       entityCtx,
+			RelationshipContext: relCtx,
+			ImportanceScores:    importanceScores,
+			ImportanceFactors:   impFactors,
+			SentimentValues:     sentimentValues,
 		})
 		if err != nil {
 			p.logger.Warn("LLM consolidation failed, falling back to text-based", "error", err)
@@ -229,11 +242,19 @@ func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*
 		boostedImportance = 1.0
 	}
 
-	// Update primary
+	// Build provenance chain: track all merged memory IDs
+	mergedIDs := make([]string, 0, len(group))
+	for _, mem := range group {
+		mergedIDs = append(mergedIDs, mem.ID)
+	}
+
+	// Update primary with provenance
+	derivedFrom := storage.StringSlice(mergedIDs)
 	_, err := p.store.UpdateMemory(ctx, primary.ID, storage.MemoryUpdate{
-		Content:    &consolidatedContent,
-		Importance: &boostedImportance,
-		Confidence: &maxConfidence,
+		Content:     &consolidatedContent,
+		Importance:  &boostedImportance,
+		Confidence:  &maxConfidence,
+		DerivedFrom: &derivedFrom,
 	})
 	if err != nil {
 		return false, err
@@ -243,12 +264,13 @@ func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*
 	activeState := storage.StateActive
 	p.store.UpdateMemory(ctx, primary.ID, storage.MemoryUpdate{State: &activeState})
 
-	// Log history
+	// Log history with provenance
 	p.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  primary.ID,
 		Operation: "consolidation",
 		Changes: map[string]any{
-			"merged_from":      getMemoryIDs(group),
+			"merged_from":      mergedIDs,
+			"derived_from":     mergedIDs,
 			"original_content": primary.Content,
 			"new_content":      consolidatedContent,
 		},
@@ -263,6 +285,61 @@ func (p *ConsolidationProcessor) consolidateGroup(ctx context.Context, group []*
 	}
 
 	return true, nil
+}
+
+// gatherConsolidationContext fetches entity/relationship context for a group of memories.
+func (p *ConsolidationProcessor) gatherConsolidationContext(ctx context.Context, group []*storage.Memory) (entityCtx, relCtx, impFactors []string) {
+	entitySet := make(map[string]*storage.Entity)
+	factorSet := make(map[string]bool)
+
+	// Collect entities mentioned across all memories in the group
+	for _, mem := range group {
+		entities, err := p.store.GetMemoryEntities(ctx, mem.ID)
+		if err != nil {
+			p.logger.Debug("failed to get entities for memory", "memory_id", mem.ID, "error", err)
+			continue
+		}
+		for _, e := range entities {
+			entitySet[e.ID] = e
+		}
+	}
+
+	// Format entity context: "Alice (person)", "Google (organization)"
+	for _, e := range entitySet {
+		entityCtx = append(entityCtx, fmt.Sprintf("%s (%s)", e.CanonicalName, strings.ToLower(string(e.Type))))
+	}
+
+	// Collect relationships between the entities we found
+	if len(entitySet) > 0 {
+		ownerEntityID := group[0].EntityID
+		for _, e := range entitySet {
+			rels, err := p.store.GetEntityRelationships(ctx, ownerEntityID, e.ID, "outgoing")
+			if err != nil {
+				continue
+			}
+			for _, rel := range rels {
+				// Only include if both sides are in our entity set
+				if _, ok := entitySet[rel.TargetEntityID]; ok {
+					sourceName := entitySet[rel.SourceEntityID].CanonicalName
+					targetName := entitySet[rel.TargetEntityID].CanonicalName
+					relCtx = append(relCtx, fmt.Sprintf("%s %s %s", sourceName, rel.RelationshipType, targetName))
+				}
+			}
+		}
+	}
+
+	// Collect deduplicated importance factors from memory history
+	// (stored on extraction, not directly on Memory — use a simple heuristic from type)
+	for _, mem := range group {
+		typeLabel := string(mem.Type)
+		factor := fmt.Sprintf("%s information", strings.ToLower(typeLabel))
+		if !factorSet[factor] {
+			factorSet[factor] = true
+			impFactors = append(impFactors, factor)
+		}
+	}
+
+	return entityCtx, relCtx, impFactors
 }
 
 // --- helpers ---

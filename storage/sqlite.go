@@ -247,12 +247,49 @@ func (s *SQLiteStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_extractions_entity ON custom_extractions(entity_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_extractions_schema ON custom_extractions(schema_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_extractions_memory ON custom_extractions(memory_id)`,
+
+		`CREATE TABLE IF NOT EXISTS agent_states (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			schema_name TEXT NOT NULL,
+			current_state TEXT NOT NULL DEFAULT '{}',
+			schema_definition TEXT NOT NULL DEFAULT '{}',
+			transition_rules TEXT DEFAULT '{}',
+			last_updated_at TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(entity_id, agent_id, schema_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_states_entity ON agent_states(entity_id, agent_id)`,
+
+		`CREATE TABLE IF NOT EXISTS agent_state_history (
+			id TEXT PRIMARY KEY,
+			state_id TEXT NOT NULL,
+			previous_state TEXT DEFAULT '{}',
+			new_state TEXT NOT NULL DEFAULT '{}',
+			changed_fields TEXT DEFAULT '[]',
+			trigger_content TEXT DEFAULT '',
+			confidence REAL NOT NULL DEFAULT 0.5,
+			reasoning TEXT DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (state_id) REFERENCES agent_states(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_state_history_state ON agent_state_history(state_id)`,
 	}
 
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migration failed: %w\nSQL: %s", err, stmt)
 		}
+	}
+
+	// Add new columns (ignore errors for already-existing columns)
+	alterStmts := []string{
+		`ALTER TABLE memories ADD COLUMN sentiment REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE memories ADD COLUMN derived_from TEXT DEFAULT '[]'`,
+	}
+	for _, stmt := range alterStmts {
+		s.db.Exec(stmt) // ignore "duplicate column" errors
 	}
 
 	return nil
@@ -277,6 +314,7 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 	tags, _ := mem.Tags.Value()
 	impFactors, _ := mem.ImportanceFactors.Value()
 	confFactors, _ := mem.ConfidenceFactors.Value()
+	derivedFrom, _ := mem.DerivedFrom.Value()
 
 	var lastAccessed *string
 	if mem.LastAccessedAt != nil {
@@ -295,13 +333,13 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, source, session_id, extraction_provider, extraction_model,
-			importance_factors, confidence_factors)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			importance_factors, confidence_factors, sentiment, derived_from)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mem.ID, mem.EntityID, mem.AgentID, mem.Content, mem.Hash, mem.Embedding,
 		string(mem.Type), tags, mem.Importance, mem.Confidence, mem.Stability,
 		mem.AccessCount, lastAccessed, string(mem.State), now, now,
 		expiresAt, mem.Source, mem.SessionID, mem.ExtractionProvider, mem.ExtractionModel,
-		impFactors, confFactors,
+		impFactors, confFactors, mem.Sentiment, derivedFrom,
 	)
 	if err != nil {
 		return err
@@ -324,7 +362,8 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id string) (*Memory, error)
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE id = ?`, id)
 
 	return scanMemory(row)
@@ -345,7 +384,8 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []string) ([]*Me
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -388,6 +428,15 @@ func (s *SQLiteStore) UpdateMemory(ctx context.Context, id string, updates Memor
 	if updates.ExpiresAt != nil {
 		setClauses = append(setClauses, "expires_at = ?")
 		args = append(args, updates.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if updates.Sentiment != nil {
+		setClauses = append(setClauses, "sentiment = ?")
+		args = append(args, *updates.Sentiment)
+	}
+	if updates.DerivedFrom != nil {
+		derivedJSON, _ := json.Marshal(*updates.DerivedFrom)
+		setClauses = append(setClauses, "derived_from = ?")
+		args = append(args, string(derivedJSON))
 	}
 
 	if len(setClauses) == 0 {
@@ -586,7 +635,8 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories %s ORDER BY %s %s LIMIT ? OFFSET ?`,
 		whereClause, orderBy, direction)
 
@@ -608,7 +658,8 @@ func (s *SQLiteStore) GetRecentMemories(ctx context.Context, entityID string, ho
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE entity_id = ? AND created_at > ? AND state = 'active'
 		ORDER BY created_at DESC LIMIT ?`, entityID, cutoff, limit)
 	if err != nil {
@@ -626,7 +677,8 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, entityID, hash string) (*M
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE entity_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
 		entityID, hash)
 	mem, err := scanMemory(row)
@@ -642,7 +694,8 @@ func (s *SQLiteStore) FindByHashWithAgent(ctx context.Context, entityID, agentID
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE entity_id = ? AND agent_id = ? AND content_hash = ? AND state != 'deleted' LIMIT 1`,
 		entityID, agentID, hash)
 	mem, err := scanMemory(row)
@@ -820,7 +873,8 @@ func (s *SQLiteStore) GetActiveMemoriesForDecay(ctx context.Context, batchSize, 
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE state IN ('active', 'stale')
 		ORDER BY created_at ASC LIMIT ? OFFSET ?`, batchSize, offset)
 	if err != nil {
@@ -1786,7 +1840,8 @@ func (s *SQLiteStore) getMemoryUnlocked(ctx context.Context, id string) (*Memory
 			memory_type, tags, importance, confidence, stability,
 			access_count, last_accessed_at, state, created_at, updated_at,
 			expires_at, deleted_at, version, source, session_id,
-			extraction_provider, extraction_model, importance_factors, confidence_factors
+			extraction_provider, extraction_model, importance_factors, confidence_factors,
+			sentiment, derived_from
 		FROM memories WHERE id = ?`, id)
 	return scanMemory(row)
 }
@@ -1797,7 +1852,7 @@ type scanner interface {
 
 func scanMemory(row scanner) (*Memory, error) {
 	var m Memory
-	var tagsStr, impFactorsStr, confFactorsStr string
+	var tagsStr, impFactorsStr, confFactorsStr, derivedFromStr string
 	var lastAccessedStr, createdStr, updatedStr sql.NullString
 	var expiresStr, deletedStr sql.NullString
 	var memType, stateStr string
@@ -1808,6 +1863,7 @@ func scanMemory(row scanner) (*Memory, error) {
 		&m.AccessCount, &lastAccessedStr, &stateStr, &createdStr, &updatedStr,
 		&expiresStr, &deletedStr, &m.Version, &m.Source, &m.SessionID,
 		&m.ExtractionProvider, &m.ExtractionModel, &impFactorsStr, &confFactorsStr,
+		&m.Sentiment, &derivedFromStr,
 	)
 	if err != nil {
 		return nil, err
@@ -1819,6 +1875,7 @@ func scanMemory(row scanner) (*Memory, error) {
 	m.Tags.Scan(tagsStr)
 	m.ImportanceFactors.Scan(impFactorsStr)
 	m.ConfidenceFactors.Scan(confFactorsStr)
+	m.DerivedFrom.Scan(derivedFromStr)
 
 	if createdStr.Valid {
 		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr.String)
@@ -1943,6 +2000,138 @@ func scanCustomExtractions(rows *sql.Rows) ([]*CustomExtraction, error) {
 		extractions = append(extractions, &ce)
 	}
 	return extractions, nil
+}
+
+// --- Agent State CRUD ---
+
+func (s *SQLiteStore) CreateAgentState(ctx context.Context, state *AgentState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if state.ID == "" {
+		state.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC()
+	state.CreatedAt = now
+	state.LastUpdatedAt = &now
+
+	currentStateJSON, _ := json.Marshal(state.CurrentState)
+	schemaJSON, _ := json.Marshal(state.SchemaDefinition)
+	rulesJSON, _ := json.Marshal(state.TransitionRules)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_states (id, entity_id, agent_id, schema_name, current_state, schema_definition, transition_rules, last_updated_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		state.ID, state.EntityID, state.AgentID, state.SchemaName,
+		string(currentStateJSON), string(schemaJSON), string(rulesJSON),
+		now.Format(time.RFC3339), now.Format(time.RFC3339),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetAgentState(ctx context.Context, entityID, agentID, schemaName string) (*AgentState, error) {
+	var st AgentState
+	var currentStateStr, schemaStr, rulesStr string
+	var lastUpdatedStr, createdStr string
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, schema_name, current_state, schema_definition, transition_rules, last_updated_at, created_at
+		 FROM agent_states WHERE entity_id = ? AND agent_id = ? AND schema_name = ?`,
+		entityID, agentID, schemaName,
+	).Scan(&st.ID, &st.EntityID, &st.AgentID, &st.SchemaName,
+		&currentStateStr, &schemaStr, &rulesStr,
+		&lastUpdatedStr, &createdStr,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	json.Unmarshal([]byte(currentStateStr), &st.CurrentState)
+	json.Unmarshal([]byte(schemaStr), &st.SchemaDefinition)
+	json.Unmarshal([]byte(rulesStr), &st.TransitionRules)
+
+	if t, err := time.Parse(time.RFC3339, lastUpdatedStr); err == nil {
+		st.LastUpdatedAt = &t
+	}
+	if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
+		st.CreatedAt = t
+	}
+
+	return &st, nil
+}
+
+func (s *SQLiteStore) UpdateAgentState(ctx context.Context, id string, newState map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stateJSON, _ := json.Marshal(newState)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_states SET current_state = ?, last_updated_at = ? WHERE id = ?`,
+		string(stateJSON), now, id,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetAgentStateHistory(ctx context.Context, stateID string, limit int) ([]*AgentStateHistory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, state_id, previous_state, new_state, changed_fields, trigger_content, confidence, reasoning, created_at
+		 FROM agent_state_history WHERE state_id = ? ORDER BY created_at DESC LIMIT ?`,
+		stateID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*AgentStateHistory
+	for rows.Next() {
+		var h AgentStateHistory
+		var prevStr, newStr, fieldsStr, createdStr string
+		if err := rows.Scan(&h.ID, &h.StateID, &prevStr, &newStr, &fieldsStr,
+			&h.TriggerContent, &h.Confidence, &h.Reasoning, &createdStr); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(prevStr), &h.PreviousState)
+		json.Unmarshal([]byte(newStr), &h.NewState)
+		h.ChangedFields.Scan(fieldsStr)
+		if t, err := time.Parse(time.RFC3339, createdStr); err == nil {
+			h.CreatedAt = t
+		}
+		entries = append(entries, &h)
+	}
+	return entries, nil
+}
+
+func (s *SQLiteStore) LogAgentStateHistory(ctx context.Context, entry *AgentStateHistory) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry.ID == "" {
+		entry.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC()
+	entry.CreatedAt = now
+
+	prevJSON, _ := json.Marshal(entry.PreviousState)
+	newJSON, _ := json.Marshal(entry.NewState)
+	fieldsJSON, _ := entry.ChangedFields.Value()
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_state_history (id, state_id, previous_state, new_state, changed_fields, trigger_content, confidence, reasoning, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		entry.ID, entry.StateID, string(prevJSON), string(newJSON), fieldsJSON,
+		entry.TriggerContent, entry.Confidence, entry.Reasoning, now.Format(time.RFC3339),
+	)
+	return err
 }
 
 // decodeEmbedding converts bytes from SQLite BLOB to float32 slice.

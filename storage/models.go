@@ -76,6 +76,7 @@ type Memory struct {
 	Importance float64 `db:"importance"`
 	Confidence float64 `db:"confidence"`
 	Stability  float64 `db:"stability"`
+	Sentiment  float64 `db:"sentiment"` // -1.0 (very negative) to 1.0 (very positive), 0.0 = neutral
 
 	AccessCount    int        `db:"access_count"`
 	LastAccessedAt *time.Time `db:"last_accessed_at"`
@@ -89,6 +90,8 @@ type Memory struct {
 
 	Source    string `db:"source"`
 	SessionID string `db:"session_id"`
+
+	DerivedFrom StringSlice `db:"derived_from"` // IDs of memories this was derived from (merges, consolidation)
 
 	ExtractionProvider string      `db:"extraction_provider"`
 	ExtractionModel    string      `db:"extraction_model"`
@@ -134,12 +137,14 @@ type MemoryQuery struct {
 
 // MemoryUpdate represents fields to update on a memory.
 type MemoryUpdate struct {
-	Content    *string
-	Importance *float64
-	Confidence *float64
-	Tags       *[]string
-	State      *MemoryState
-	ExpiresAt  *time.Time
+	Content     *string
+	Importance  *float64
+	Confidence  *float64
+	Sentiment   *float64
+	Tags        *[]string
+	State       *MemoryState
+	ExpiresAt   *time.Time
+	DerivedFrom *StringSlice
 }
 
 // SimilarityResult wraps a memory with its similarity score.
@@ -299,4 +304,30 @@ type CustomExtractionQuery struct {
 	SchemaID string
 	Limit    int
 	Offset   int
+}
+
+// AgentState represents a persistent state for an agent workflow.
+type AgentState struct {
+	ID              string         `db:"id"`
+	EntityID        string         `db:"entity_id"`
+	AgentID         string         `db:"agent_id"`
+	SchemaName      string         `db:"schema_name"`
+	CurrentState    map[string]any `db:"current_state"`
+	SchemaDefinition map[string]any `db:"schema_definition"`
+	TransitionRules map[string]any `db:"transition_rules"`
+	LastUpdatedAt   *time.Time     `db:"last_updated_at"`
+	CreatedAt       time.Time      `db:"created_at"`
+}
+
+// AgentStateHistory represents a state change event.
+type AgentStateHistory struct {
+	ID             string         `db:"id"`
+	StateID        string         `db:"state_id"`
+	PreviousState  map[string]any `db:"previous_state"`
+	NewState       map[string]any `db:"new_state"`
+	ChangedFields  StringSlice    `db:"changed_fields"`
+	TriggerContent string         `db:"trigger_content"`
+	Confidence     float64        `db:"confidence"`
+	Reasoning      string         `db:"reasoning"`
+	CreatedAt      time.Time      `db:"created_at"`
 }

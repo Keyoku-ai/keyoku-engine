@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/keyoku-ai/keyoku-embedded/llm"
 	"github.com/keyoku-ai/keyoku-embedded/storage"
 )
 
@@ -19,6 +20,11 @@ type HeartbeatResult struct {
 	Conflicts     []ConflictPair  // Unresolved contradictions
 	StaleMonitors []*Memory       // Monitoring tasks overdue for check
 	Summary       string          // Pre-built context string for LLM
+
+	// LLM prioritization fields (populated only when WithLLMPrioritization is set)
+	PriorityAction string   // The single most important action
+	ActionItems    []string // All items ordered by priority
+	Urgency        string   // "immediate", "soon", "can_wait"
 }
 
 // ConflictPair re-exported from storage for public API.
@@ -34,6 +40,11 @@ type heartbeatConfig struct {
 	maxResults      int
 	agentID         string
 	checks          []HeartbeatCheckType
+
+	// LLM prioritization (opt-in)
+	llmProvider    llm.Provider
+	agentContext   string
+	entityContext  string
 }
 
 // HeartbeatCheckType represents a specific check to run.
@@ -81,6 +92,16 @@ func WithHeartbeatAgentID(id string) HeartbeatOption {
 // WithChecks enables only specific checks.
 func WithChecks(checks ...HeartbeatCheckType) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.checks = checks }
+}
+
+// WithLLMPrioritization enables LLM-powered action prioritization on heartbeat results.
+// Only fires when ShouldAct is true. The provider should be the same one used for memory extraction.
+func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
+	return func(c *heartbeatConfig) {
+		c.llmProvider = provider
+		c.agentContext = agentContext
+		c.entityContext = entityContext
+	}
 }
 
 // HeartbeatCheck performs a zero-token local query against SQLite.
@@ -254,6 +275,21 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	// Build summary if action is needed
 	if result.ShouldAct {
 		result.Summary = buildSummary(result)
+
+		// LLM prioritization (opt-in, only when there's something to prioritize)
+		if cfg.llmProvider != nil && result.Summary != "" {
+			priorityResp, err := cfg.llmProvider.PrioritizeActions(ctx, llm.ActionPriorityRequest{
+				Summary:       result.Summary,
+				AgentContext:  cfg.agentContext,
+				EntityContext: cfg.entityContext,
+			})
+			if err == nil && priorityResp != nil {
+				result.PriorityAction = priorityResp.PriorityAction
+				result.ActionItems = priorityResp.ActionItems
+				result.Urgency = priorityResp.Urgency
+			}
+			// LLM failure is non-fatal — heartbeat still returns local results
+		}
 	}
 
 	return result, nil

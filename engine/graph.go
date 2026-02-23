@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/keyoku-ai/keyoku-embedded/llm"
 	"github.com/keyoku-ai/keyoku-embedded/storage"
 )
 
@@ -336,4 +337,88 @@ func (g *GraphEngine) getEdges(ctx context.Context, ownerEntityID, entityID stri
 	}
 
 	return edges, nil
+}
+
+// ExplainConnection uses LLM to explain how two entities are connected.
+// Finds the shortest path, collects entity names and relationships, then asks LLM to summarize.
+func (g *GraphEngine) ExplainConnection(ctx context.Context, ownerEntityID, fromEntityID, toEntityID string, provider llm.Provider) (string, error) {
+	path, err := g.FindPath(ctx, ownerEntityID, fromEntityID, toEntityID)
+	if err != nil {
+		return "", fmt.Errorf("no connection found: %w", err)
+	}
+
+	var entities []string
+	var relationships []string
+
+	for i, entityID := range path {
+		entity, err := g.store.GetEntity(ctx, entityID)
+		if err != nil || entity == nil {
+			entities = append(entities, entityID)
+			continue
+		}
+		entities = append(entities, fmt.Sprintf("%s (%s)", entity.CanonicalName, entity.Type))
+
+		if i < len(path)-1 {
+			nextID := path[i+1]
+			rels, _ := g.store.GetEntityRelationships(ctx, ownerEntityID, entityID, "both")
+			for _, rel := range rels {
+				if (rel.SourceEntityID == entityID && rel.TargetEntityID == nextID) ||
+					(rel.TargetEntityID == entityID && rel.SourceEntityID == nextID) {
+					nextEntity, _ := g.store.GetEntity(ctx, nextID)
+					nextName := nextID
+					if nextEntity != nil {
+						nextName = nextEntity.CanonicalName
+					}
+					relationships = append(relationships, fmt.Sprintf("%s -[%s]-> %s", entity.CanonicalName, rel.RelationshipType, nextName))
+					break
+				}
+			}
+		}
+	}
+
+	resp, err := provider.SummarizeGraph(ctx, llm.GraphSummaryRequest{
+		Entities:      entities,
+		Relationships: relationships,
+		Question:      fmt.Sprintf("Explain how %s and %s are connected.", entities[0], entities[len(entities)-1]),
+	})
+	if err != nil {
+		return "", fmt.Errorf("LLM graph summary failed: %w", err)
+	}
+
+	return resp.Summary, nil
+}
+
+// SummarizeEntityContext uses LLM to summarize all relationships for an entity.
+func (g *GraphEngine) SummarizeEntityContext(ctx context.Context, ownerEntityID, entityID string, provider llm.Provider) (string, error) {
+	entityCtx, err := g.GetEntityContext(ctx, ownerEntityID, entityID)
+	if err != nil {
+		return "", err
+	}
+
+	var entities []string
+	var relationships []string
+
+	entities = append(entities, fmt.Sprintf("%s (%s)", entityCtx.Entity.CanonicalName, entityCtx.Entity.Type))
+
+	for _, edge := range entityCtx.Relationships {
+		entities = append(entities, fmt.Sprintf("%s (%s)", edge.TargetEntity.CanonicalName, edge.TargetEntity.Type))
+		if edge.Direction == "outgoing" {
+			relationships = append(relationships, fmt.Sprintf("%s -[%s]-> %s",
+				entityCtx.Entity.CanonicalName, edge.Relationship.RelationshipType, edge.TargetEntity.CanonicalName))
+		} else {
+			relationships = append(relationships, fmt.Sprintf("%s -[%s]-> %s",
+				edge.TargetEntity.CanonicalName, edge.Relationship.RelationshipType, entityCtx.Entity.CanonicalName))
+		}
+	}
+
+	resp, err := provider.SummarizeGraph(ctx, llm.GraphSummaryRequest{
+		Entities:      entities,
+		Relationships: relationships,
+		Question:      fmt.Sprintf("Summarize everything we know about %s based on their relationships.", entityCtx.Entity.CanonicalName),
+	})
+	if err != nil {
+		return "", fmt.Errorf("LLM graph summary failed: %w", err)
+	}
+
+	return resp.Summary, nil
 }

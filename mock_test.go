@@ -253,6 +253,11 @@ func (m *testStore) DeleteCustomExtraction(ctx context.Context, id string) error
 func (m *testStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaID string) error {
 	if m.deleteCustomExtractionsBySchemaFn != nil { return m.deleteCustomExtractionsBySchemaFn(ctx, schemaID) }; return nil
 }
+func (m *testStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
+func (m *testStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) { return nil, nil }
+func (m *testStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error { return nil }
+func (m *testStore) GetAgentStateHistory(_ context.Context, _ string, _ int) ([]*storage.AgentStateHistory, error) { return nil, nil }
+func (m *testStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStateHistory) error { return nil }
 func (m *testStore) Close() error {
 	if m.closeFn != nil { return m.closeFn() }; return nil
 }

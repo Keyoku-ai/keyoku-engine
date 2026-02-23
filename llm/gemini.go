@@ -62,11 +62,12 @@ func (g *GeminiProvider) ExtractMemories(ctx context.Context, req ExtractionRequ
 						"type":               {Type: genai.TypeString, Enum: []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
 						"importance":         {Type: genai.TypeNumber},
 						"confidence":         {Type: genai.TypeNumber},
+						"sentiment":          {Type: genai.TypeNumber},
 						"importance_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
 						"confidence_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
 						"hedging_detected":   {Type: genai.TypeBoolean},
 					},
-					Required: []string{"content", "type", "importance", "confidence"},
+					Required: []string{"content", "type", "importance", "confidence", "sentiment"},
 				},
 			},
 			"entities": {
@@ -163,7 +164,7 @@ func (g *GeminiProvider) ConsolidateMemories(ctx context.Context, req Consolidat
 	model.SetTemperature(0.3)
 	model.SetTopP(0.8)
 
-	prompt := FormatConsolidationPrompt(req.Memories)
+	prompt := FormatConsolidationPrompt(req)
 	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
 		return nil, fmt.Errorf("Gemini consolidation failed: %w", err)
@@ -248,6 +249,144 @@ func (g *GeminiProvider) ExtractState(ctx context.Context, req StateExtractionRe
 	var result StateExtractionResponse
 	if err := json.Unmarshal([]byte(text), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse Gemini state extraction response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (g *GeminiProvider) DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"contradicts":   {Type: genai.TypeBoolean},
+			"conflict_type": {Type: genai.TypeString, Enum: []string{"contradiction", "update", "temporal", "partial", "none"}},
+			"confidence":    {Type: genai.TypeNumber},
+			"explanation":   {Type: genai.TypeString},
+			"resolution":    {Type: genai.TypeString, Enum: []string{"use_new", "keep_existing", "merge", "keep_both"}},
+		},
+		Required: []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
+	}
+	model.SetTemperature(0.2)
+	model.SetTopP(0.8)
+
+	prompt := FormatConflictCheckPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini conflict check failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ConflictCheckResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini conflict check response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (g *GeminiProvider) ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"new_importance": {Type: genai.TypeNumber},
+			"reason":         {Type: genai.TypeString},
+			"should_update":  {Type: genai.TypeBoolean},
+		},
+		Required: []string{"new_importance", "reason", "should_update"},
+	}
+	model.SetTemperature(0.2)
+	model.SetTopP(0.8)
+
+	prompt := FormatImportanceReEvalPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini importance re-eval failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ImportanceReEvalResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini importance re-eval response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (g *GeminiProvider) PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"priority_action": {Type: genai.TypeString},
+			"action_items":    {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+			"reasoning":       {Type: genai.TypeString},
+			"urgency":         {Type: genai.TypeString, Enum: []string{"immediate", "soon", "can_wait"}},
+		},
+		Required: []string{"priority_action", "action_items", "reasoning", "urgency"},
+	}
+	model.SetTemperature(0.3)
+	model.SetTopP(0.8)
+
+	prompt := FormatActionPriorityPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini action priority failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var priorityResult ActionPriorityResponse
+	if err := json.Unmarshal([]byte(text), &priorityResult); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini action priority response: %w", err)
+	}
+
+	return &priorityResult, nil
+}
+
+func (g *GeminiProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"summary":    {Type: genai.TypeString},
+			"confidence": {Type: genai.TypeNumber},
+		},
+		Required: []string{"summary", "confidence"},
+	}
+	model.SetTemperature(0.3)
+	model.SetTopP(0.8)
+
+	prompt := FormatGraphSummaryPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini graph summary failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result GraphSummaryResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini graph summary response: %w", err)
 	}
 
 	return &result, nil

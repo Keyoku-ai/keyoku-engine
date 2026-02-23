@@ -10,7 +10,11 @@ import (
 )
 
 func newTestEngine(store *mockStore, provider *mockProvider, emb *mockEmbedder) *Engine {
-	return NewEngine(provider, emb, store, DefaultEngineConfig())
+	cfg := DefaultEngineConfig()
+	// Disable significance filter in tests so short test content isn't skipped
+	disabled := SignificanceConfig{Enabled: false}
+	cfg.Significance = &disabled
+	return NewEngine(provider, emb, store, cfg)
 }
 
 func TestEngine_Add_HappyPath(t *testing.T) {

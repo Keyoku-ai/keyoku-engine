@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Provider is the interface that all LLM providers must implement.
@@ -12,6 +13,10 @@ type Provider interface {
 	ConsolidateMemories(ctx context.Context, req ConsolidationRequest) (*ConsolidationResponse, error)
 	ExtractWithSchema(ctx context.Context, req CustomExtractionRequest) (*CustomExtractionResponse, error)
 	ExtractState(ctx context.Context, req StateExtractionRequest) (*StateExtractionResponse, error)
+	DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error)
+	ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error)
+	PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error)
+	SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error)
 	Name() string
 	Model() string
 }
@@ -76,6 +81,12 @@ Base scores by type: IDENTITY=0.8, PREFERENCE=0.6, RELATIONSHIP=0.7, EVENT=0.5, 
 - HIGH: Direct first-person statement, unambiguous, explicit
 - LOWER: Inferred from context, third-party ("friend said"), ambiguous, hedged
 
+## SENTIMENT SCORING (-1.0 to 1.0)
+- POSITIVE (0.3 to 1.0): joy, excitement, satisfaction, love, gratitude, enthusiasm
+- NEGATIVE (-1.0 to -0.3): frustration, anger, sadness, disappointment, fear, anxiety
+- NEUTRAL (-0.3 to 0.3): factual statements, descriptions without emotion
+Examples: "I love my new job" → 0.8, "I'm frustrated with the commute" → -0.6, "I work at Google" → 0.0
+
 ## ENTITY EXTRACTION
 Extract named entities mentioned in the input:
 - PERSON: People's names (use their FULL name as the canonical form)
@@ -121,6 +132,7 @@ Return JSON matching this exact schema:
       "type": "string - one of: IDENTITY, PREFERENCE, RELATIONSHIP, EVENT, ACTIVITY, PLAN, CONTEXT, EPHEMERAL",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
+      "sentiment": -1.0 to 1.0,
       "importance_factors": ["array", "of", "strings", "explaining", "importance"],
       "confidence_factors": ["array", "of", "strings", "explaining", "confidence"],
       "hedging_detected": true/false
@@ -156,11 +168,15 @@ const consolidationPrompt = `You are a memory consolidation system. Your job is 
 ## MEMORIES TO CONSOLIDATE
 %s
 
+%s
 ## YOUR TASK
 1. Analyze all the provided memories
 2. Identify the core information they share
 3. Identify any unique details in each memory
-4. Create a single consolidated memory that:
+4. Use entity/relationship context (if provided) to preserve proper names and connections
+5. Prioritize information from higher-importance memories
+6. Consider sentiment trends — if memories shifted from positive to negative (or vice versa), reflect the most recent sentiment
+7. Create a single consolidated memory that:
    - Preserves ALL important facts
    - Eliminates redundancy
    - Maintains clarity and readability
@@ -249,6 +265,143 @@ Return a JSON object with:
 
 Return ONLY valid JSON. No markdown, no explanation outside the JSON.`
 
+const conflictCheckPrompt = `Do these two memories contradict or conflict?
+
+Memory A (existing): "%s"
+Memory B (new): "%s"
+Type: %s
+Context: %s
+
+Analyze whether memory B contradicts, updates, or conflicts with memory A.
+
+## OUTPUT (JSON)
+Return JSON with:
+- "contradicts": true/false - whether there is a meaningful conflict
+- "conflict_type": one of "contradiction" (direct opposite), "update" (newer info replaces), "temporal" (time-based change), "partial" (partially conflicts), "none"
+- "confidence": 0.0-1.0 how confident you are
+- "explanation": brief explanation of the conflict (or lack thereof)
+- "resolution": one of "use_new" (replace with B), "keep_existing" (keep A), "merge" (combine both), "keep_both" (no conflict)
+
+Return ONLY valid JSON. No markdown, no explanation.`
+
+const importanceReEvalPrompt = `Given new information, should this existing memory's importance change?
+
+New information: "%s"
+Existing memory: "%s" (importance: %.2f, type: %s)
+Related context: %s
+
+Consider:
+- Does the new info make the existing memory MORE relevant (e.g., confirms, adds context)?
+- Does the new info make it LESS relevant (e.g., supersedes, contradicts)?
+- Only update if the change is significant (>0.1 difference)
+
+## OUTPUT (JSON)
+Return JSON with:
+- "new_importance": 0.0-1.0 the new importance score
+- "reason": brief explanation
+- "should_update": true/false - only true if the change is meaningful
+
+Return ONLY valid JSON. No markdown, no explanation.`
+
+const actionPriorityPrompt = `You are an AI agent's executive function. Given pending items from a heartbeat check, determine what the agent should prioritize.
+
+Current agent context: %s
+Entity: %s
+
+Pending items:
+%s
+
+Analyze the items and determine:
+1. The single most important action to take right now
+2. All action items ordered by priority
+3. The urgency level
+
+## OUTPUT (JSON)
+Return JSON with:
+- "priority_action": string - the single most important thing to do right now
+- "action_items": array of strings - all items ordered by priority (most important first)
+- "reasoning": string - brief explanation of why this ordering
+- "urgency": one of "immediate" (act now), "soon" (within the hour), "can_wait" (no rush)
+
+Return ONLY valid JSON. No markdown, no explanation.`
+
+// FormatActionPriorityPrompt formats the heartbeat prioritization prompt.
+func FormatActionPriorityPrompt(req ActionPriorityRequest) string {
+	agentCtx := req.AgentContext
+	if agentCtx == "" {
+		agentCtx = "(no agent context provided)"
+	}
+	entityCtx := req.EntityContext
+	if entityCtx == "" {
+		entityCtx = "(no entity context provided)"
+	}
+	return fmt.Sprintf(actionPriorityPrompt, agentCtx, entityCtx, req.Summary)
+}
+
+const graphSummaryPrompt = `You are a knowledge graph reasoning system. Analyze the following entity relationships and provide a natural language summary.
+
+## ENTITIES
+%s
+
+## RELATIONSHIPS
+%s
+
+## QUESTION
+%s
+
+Provide a clear, concise summary explaining how these entities are connected and what the relationships mean.
+
+## OUTPUT (JSON)
+Return JSON with:
+- "summary": string - natural language explanation of the connections
+- "confidence": 0.0-1.0 - how confident you are in this summary
+
+Return ONLY valid JSON. No markdown, no explanation.`
+
+// FormatGraphSummaryPrompt formats the graph reasoning prompt.
+func FormatGraphSummaryPrompt(req GraphSummaryRequest) string {
+	entitiesStr := "(none)"
+	if len(req.Entities) > 0 {
+		entitiesStr = ""
+		for _, e := range req.Entities {
+			entitiesStr += fmt.Sprintf("- %s\n", e)
+		}
+	}
+	relsStr := "(none)"
+	if len(req.Relationships) > 0 {
+		relsStr = ""
+		for _, r := range req.Relationships {
+			relsStr += fmt.Sprintf("- %s\n", r)
+		}
+	}
+	question := req.Question
+	if question == "" {
+		question = "Summarize the connections between these entities."
+	}
+	return fmt.Sprintf(graphSummaryPrompt, entitiesStr, relsStr, question)
+}
+
+// FormatConflictCheckPrompt formats the conflict detection prompt.
+func FormatConflictCheckPrompt(req ConflictCheckRequest) string {
+	ctx := req.Context
+	if ctx == "" {
+		ctx = "(no additional context)"
+	}
+	return fmt.Sprintf(conflictCheckPrompt, req.ExistingContent, req.NewContent, req.MemoryType, ctx)
+}
+
+// FormatImportanceReEvalPrompt formats the importance re-evaluation prompt.
+func FormatImportanceReEvalPrompt(req ImportanceReEvalRequest) string {
+	relatedStr := "(none)"
+	if len(req.RelatedMemories) > 0 {
+		relatedStr = ""
+		for _, m := range req.RelatedMemories {
+			relatedStr += fmt.Sprintf("- %s\n", m)
+		}
+	}
+	return fmt.Sprintf(importanceReEvalPrompt, req.NewContent, req.ExistingContent, req.CurrentImportance, req.CurrentType, relatedStr)
+}
+
 // FormatPrompt formats the extraction prompt with the given context.
 func FormatPrompt(req ExtractionRequest) string {
 	contextStr := "(No recent context)"
@@ -270,13 +423,44 @@ func FormatPrompt(req ExtractionRequest) string {
 	return fmt.Sprintf(extractionPrompt, contextStr, memoriesStr, req.Content)
 }
 
-// FormatConsolidationPrompt formats the consolidation prompt with memories.
-func FormatConsolidationPrompt(memories []string) string {
+// FormatConsolidationPrompt formats the consolidation prompt with memories and context.
+func FormatConsolidationPrompt(req ConsolidationRequest) string {
 	memoriesStr := ""
-	for i, mem := range memories {
-		memoriesStr += fmt.Sprintf("%d. %s\n", i+1, mem)
+	for i, mem := range req.Memories {
+		line := fmt.Sprintf("%d. %s", i+1, mem)
+		// Append importance and sentiment inline if available
+		if i < len(req.ImportanceScores) || i < len(req.SentimentValues) {
+			annotations := []string{}
+			if i < len(req.ImportanceScores) {
+				annotations = append(annotations, fmt.Sprintf("importance=%.2f", req.ImportanceScores[i]))
+			}
+			if i < len(req.SentimentValues) {
+				annotations = append(annotations, fmt.Sprintf("sentiment=%.2f", req.SentimentValues[i]))
+			}
+			line += fmt.Sprintf(" [%s]", strings.Join(annotations, ", "))
+		}
+		memoriesStr += line + "\n"
 	}
-	return fmt.Sprintf(consolidationPrompt, memoriesStr)
+
+	// Build optional context section
+	contextStr := ""
+	hasContext := len(req.EntityContext) > 0 || len(req.RelationshipContext) > 0 || len(req.ImportanceFactors) > 0
+
+	if hasContext {
+		contextStr += "## CONTEXT\n"
+		if len(req.EntityContext) > 0 {
+			contextStr += "Entities mentioned: " + strings.Join(req.EntityContext, ", ") + "\n"
+		}
+		if len(req.RelationshipContext) > 0 {
+			contextStr += "Relationships: " + strings.Join(req.RelationshipContext, ", ") + "\n"
+		}
+		if len(req.ImportanceFactors) > 0 {
+			contextStr += "Key importance factors: " + strings.Join(req.ImportanceFactors, ", ") + "\n"
+		}
+		contextStr += "\n"
+	}
+
+	return fmt.Sprintf(consolidationPrompt, memoriesStr, contextStr)
 }
 
 // FormatCustomExtractionPrompt formats the prompt for custom schema extraction.

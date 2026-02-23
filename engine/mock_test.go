@@ -447,6 +447,19 @@ func (m *mockStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaI
 	}
 	return nil
 }
+func (m *mockStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
+func (m *mockStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error {
+	return nil
+}
+func (m *mockStore) GetAgentStateHistory(_ context.Context, _ string, _ int) ([]*storage.AgentStateHistory, error) {
+	return nil, nil
+}
+func (m *mockStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStateHistory) error {
+	return nil
+}
 func (m *mockStore) Close() error {
 	if m.closeFn != nil {
 		return m.closeFn()
@@ -494,6 +507,18 @@ func (m *mockProvider) ExtractState(ctx context.Context, req llm.StateExtraction
 		return m.extractStateFn(ctx, req)
 	}
 	return &llm.StateExtractionResponse{}, nil
+}
+func (m *mockProvider) DetectConflict(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+	return &llm.ConflictCheckResponse{}, nil
+}
+func (m *mockProvider) ReEvaluateImportance(_ context.Context, _ llm.ImportanceReEvalRequest) (*llm.ImportanceReEvalResponse, error) {
+	return &llm.ImportanceReEvalResponse{}, nil
+}
+func (m *mockProvider) PrioritizeActions(_ context.Context, _ llm.ActionPriorityRequest) (*llm.ActionPriorityResponse, error) {
+	return &llm.ActionPriorityResponse{}, nil
+}
+func (m *mockProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
+	return &llm.GraphSummaryResponse{}, nil
 }
 func (m *mockProvider) Name() string {
 	if m.name != "" {

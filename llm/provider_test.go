@@ -138,7 +138,7 @@ func TestFormatPrompt_WithContext(t *testing.T) {
 }
 
 func TestFormatConsolidationPrompt(t *testing.T) {
-	prompt := FormatConsolidationPrompt([]string{"User likes pizza", "User enjoys Italian food"})
+	prompt := FormatConsolidationPrompt(ConsolidationRequest{Memories: []string{"User likes pizza", "User enjoys Italian food"}})
 	if !strings.Contains(prompt, "1. User likes pizza") {
 		t.Error("prompt missing first memory")
 	}

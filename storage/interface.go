@@ -92,6 +92,13 @@ type Store interface {
 	DeleteCustomExtraction(ctx context.Context, id string) error
 	DeleteCustomExtractionsBySchema(ctx context.Context, schemaID string) error
 
+	// Agent State CRUD
+	CreateAgentState(ctx context.Context, state *AgentState) error
+	GetAgentState(ctx context.Context, entityID, agentID, schemaName string) (*AgentState, error)
+	UpdateAgentState(ctx context.Context, id string, newState map[string]any) error
+	GetAgentStateHistory(ctx context.Context, stateID string, limit int) ([]*AgentStateHistory, error)
+	LogAgentStateHistory(ctx context.Context, entry *AgentStateHistory) error
+
 	// Maintenance
 	Close() error
 	Ping(ctx context.Context) error

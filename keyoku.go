@@ -63,12 +63,13 @@ const (
 
 // Keyoku is the main public API for the embedded memory engine.
 type Keyoku struct {
-	engine    *engine.Engine
-	store     storage.Store
-	scheduler *jobs.Scheduler
-	emb       embedder.Embedder
-	provider  llm.Provider
-	logger    *slog.Logger
+	engine       *engine.Engine
+	store        storage.Store
+	scheduler    *jobs.Scheduler
+	emb          embedder.Embedder
+	provider     llm.Provider
+	logger       *slog.Logger
+	stateManager *engine.StateManager
 }
 
 // New creates a new Keyoku instance with the given configuration.
@@ -103,10 +104,11 @@ func New(cfg Config) (*Keyoku, error) {
 	}
 
 	k := &Keyoku{
-		store:    store,
-		emb:      emb,
-		provider: provider,
-		logger:   logger,
+		store:        store,
+		emb:          emb,
+		provider:     provider,
+		logger:       logger,
+		stateManager: engine.NewStateManager(store, provider),
 	}
 
 	// Create engine
@@ -131,6 +133,7 @@ func New(cfg Config) (*Keyoku, error) {
 func (k *Keyoku) SetStore(store storage.Store) {
 	k.store = store
 	k.engine = engine.NewEngine(k.provider, k.emb, store, engine.DefaultEngineConfig())
+	k.stateManager = engine.NewStateManager(store, k.provider)
 }
 
 // --- RememberOption ---
@@ -271,6 +274,11 @@ func (k *Keyoku) Stats(ctx context.Context, entityID string) (*Stats, error) {
 	return k.engine.GetStats(ctx, entityID)
 }
 
+// TokenUsage returns token usage statistics for an entity.
+func (k *Keyoku) TokenUsage(entityID string) engine.TokenUsageStats {
+	return k.engine.TokenBudget().GetUsage(entityID)
+}
+
 // --- Knowledge Graph ---
 
 // EntityService provides entity operations.
@@ -323,17 +331,28 @@ func (rs *RelationshipService) Get(ctx context.Context, id string) (*Relationshi
 
 // GraphService provides graph traversal operations.
 type GraphService struct {
-	graph *engine.GraphEngine
+	graph    *engine.GraphEngine
+	provider llm.Provider
 }
 
 // Graph returns the graph service.
 func (k *Keyoku) Graph() *GraphService {
-	return &GraphService{graph: k.engine.Graph()}
+	return &GraphService{graph: k.engine.Graph(), provider: k.provider}
 }
 
 // FindPath finds the shortest path between two entities.
 func (gs *GraphService) FindPath(ctx context.Context, ownerEntityID, fromEntityID, toEntityID string) ([]string, error) {
 	return gs.graph.FindPath(ctx, ownerEntityID, fromEntityID, toEntityID)
+}
+
+// ExplainConnection uses LLM to explain how two entities are connected.
+func (gs *GraphService) ExplainConnection(ctx context.Context, ownerEntityID, fromEntityID, toEntityID string) (string, error) {
+	return gs.graph.ExplainConnection(ctx, ownerEntityID, fromEntityID, toEntityID, gs.provider)
+}
+
+// SummarizeEntity uses LLM to summarize all relationships for an entity.
+func (gs *GraphService) SummarizeEntity(ctx context.Context, ownerEntityID, entityID string) (string, error) {
+	return gs.graph.SummarizeEntityContext(ctx, ownerEntityID, entityID, gs.provider)
 }
 
 // --- Custom Extraction Schemas ---
@@ -412,6 +431,41 @@ func (xs *ExtractionService) List(ctx context.Context, query storage.CustomExtra
 // Delete removes a custom extraction.
 func (xs *ExtractionService) Delete(ctx context.Context, id string) error {
 	return xs.store.DeleteCustomExtraction(ctx, id)
+}
+
+// --- Agent State Machine ---
+
+// AgentStateService provides agent state operations.
+type AgentStateService struct {
+	sm *engine.StateManager
+}
+
+// AgentState returns the agent state service.
+func (k *Keyoku) AgentState() *AgentStateService {
+	return &AgentStateService{sm: k.stateManager}
+}
+
+// Register creates a new agent state schema registration.
+func (as *AgentStateService) Register(ctx context.Context, entityID, agentID, schemaName string, schema map[string]any, transitionRules map[string]any) error {
+	return as.sm.Register(ctx, entityID, agentID, schemaName, schema, transitionRules)
+}
+
+// Update processes content through LLM to extract and persist state changes.
+func (as *AgentStateService) Update(ctx context.Context, entityID, agentID, schemaName, content string, conversationCtx ...string) (*engine.StateUpdateResult, error) {
+	return as.sm.Update(ctx, entityID, agentID, schemaName, content, conversationCtx)
+}
+
+// Get retrieves the current state for an agent.
+func (as *AgentStateService) Get(ctx context.Context, entityID, agentID, schemaName string) (map[string]any, error) {
+	return as.sm.Get(ctx, entityID, agentID, schemaName)
+}
+
+// StateHistoryEntry is the public type for agent state history.
+type StateHistoryEntry = storage.AgentStateHistory
+
+// History retrieves the state change history.
+func (as *AgentStateService) History(ctx context.Context, entityID, agentID, schemaName string, limit int) ([]*StateHistoryEntry, error) {
+	return as.sm.History(ctx, entityID, agentID, schemaName, limit)
 }
 
 // Close closes the Keyoku instance and releases all resources.

@@ -16,7 +16,10 @@ import (
 
 // EngineConfig holds configuration for the engine.
 type EngineConfig struct {
-	ContextTurns int // number of recent session messages for context (default: 5)
+	ContextTurns            int                // number of recent session messages for context (default: 5)
+	TokenBudget             *TokenBudgetConfig // nil = unlimited
+	Significance            *SignificanceConfig // nil = use defaults (enabled)
+	EnableImportanceReEval  bool               // enable LLM-based importance re-evaluation for related memories
 }
 
 // DefaultEngineConfig returns a default engine configuration.
@@ -40,6 +43,9 @@ type Engine struct {
 	relationshipDetector *RelationshipDetector
 	retriever            *EnhancedRetriever
 	graph                *GraphEngine
+
+	tokenBudget         *TokenBudget
+	significanceScorer  *SignificanceScorer
 }
 
 // NewEngine creates a new memory engine with the given dependencies.
@@ -55,6 +61,22 @@ func NewEngine(
 
 	graphEngine := NewGraphEngine(store, DefaultGraphConfig())
 
+	// Initialize token budget
+	var budget *TokenBudget
+	if config.TokenBudget != nil {
+		budget = NewTokenBudget(config.TokenBudget)
+	} else {
+		budget = NewTokenBudget(nil) // unlimited
+	}
+
+	// Initialize significance scorer
+	var sigConfig SignificanceConfig
+	if config.Significance != nil {
+		sigConfig = *config.Significance
+	} else {
+		sigConfig = DefaultSignificanceConfig()
+	}
+
 	return &Engine{
 		provider:             provider,
 		embedder:             emb,
@@ -67,6 +89,8 @@ func NewEngine(
 		relationshipDetector: NewRelationshipDetector(store, DefaultRelationshipConfig()),
 		retriever:            NewEnhancedRetriever(store, emb, graphEngine, DefaultRetrievalConfig()),
 		graph:                graphEngine,
+		tokenBudget:          budget,
+		significanceScorer:   NewSignificanceScorer(sigConfig),
 	}
 }
 
@@ -78,6 +102,9 @@ func (e *Engine) Graph() *GraphEngine { return e.graph }
 
 // Retriever returns the enhanced retriever for external use.
 func (e *Engine) Retriever() *EnhancedRetriever { return e.retriever }
+
+// TokenBudget returns the token budget tracker.
+func (e *Engine) TokenBudget() *TokenBudget { return e.tokenBudget }
 
 // AddRequest represents a request to add memories.
 type AddRequest struct {
@@ -112,6 +139,35 @@ type MemoryDetail struct {
 
 // Add extracts and stores memories from content.
 func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*AddResult, error) {
+	// Step 0: Significance filter — skip trivial content before any API calls
+	if e.significanceScorer != nil {
+		sigResult := e.significanceScorer.Score(req.Content)
+		if sigResult.Skip {
+			return &AddResult{
+				Skipped: 1,
+				Details: []MemoryDetail{{
+					Content: req.Content,
+					Action:  "skipped",
+					Reason:  sigResult.Reason,
+				}},
+			}, nil
+		}
+	}
+
+	// Step 0b: Token budget check — fall back to local-only if budget exceeded
+	estimatedTokens := 600 // approximate tokens for extraction call
+	if !e.tokenBudget.CanSpend(entityID, estimatedTokens) {
+		e.tokenBudget.RecordExceeded(entityID)
+		return &AddResult{
+			Skipped: 1,
+			Details: []MemoryDetail{{
+				Content: req.Content,
+				Action:  "skipped",
+				Reason:  "token budget exceeded",
+			}},
+		}, nil
+	}
+
 	// Get conversation context
 	contextMsgs, err := e.store.GetRecentSessionMessages(ctx, entityID, e.config.ContextTurns)
 	if err != nil {
@@ -148,6 +204,10 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 	if err != nil {
 		return nil, fmt.Errorf("extraction failed: %w", err)
 	}
+
+	// Record token usage (estimate based on content length)
+	tokenEstimate := len(req.Content)/4 + 400 // rough: input/4 + base output
+	e.tokenBudget.Record(entityID, tokenEstimate)
 
 	result := &AddResult{}
 
@@ -195,6 +255,11 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 			Reason:  skip.Reason,
 		})
 		result.Skipped++
+	}
+
+	// Adaptive importance re-evaluation: check if new content changes importance of related memories
+	if e.config.EnableImportanceReEval && e.provider != nil && result.MemoriesCreated > 0 {
+		e.reEvaluateRelatedImportance(ctx, entityID, req.Content, similarMemories)
 	}
 
 	// Run custom schema extraction if schema_id is provided (runs alongside default extraction)
@@ -317,6 +382,15 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		}
 	}
 
+	// Track provenance from conflict resolution
+	var derivedFrom storage.StringSlice
+	if conflictResult != nil && conflictResult.HasConflict && len(conflictResult.Conflicts) > 0 {
+		conflict := conflictResult.Conflicts[0]
+		if conflict.ExistingMemory != nil && (conflict.Resolution == ResolutionUseNew || conflict.Resolution == ResolutionMerge) {
+			derivedFrom = append(derivedFrom, conflict.ExistingMemory.ID)
+		}
+	}
+
 	stability := memType.StabilityDays()
 	now := time.Now()
 
@@ -338,9 +412,11 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		Importance:         extracted.Importance,
 		Confidence:         extracted.Confidence,
 		Stability:          stability,
+		Sentiment:          extracted.Sentiment,
 		AccessCount:        0,
 		LastAccessedAt:     &now,
 		State:              storage.StateActive,
+		DerivedFrom:        derivedFrom,
 		Source:             req.Source,
 		SessionID:          req.SessionID,
 		ExtractionProvider: e.provider.Name(),
@@ -814,6 +890,90 @@ func (e *Engine) runCustomExtraction(ctx context.Context, entityID string, req A
 	}
 
 	return extraction, nil
+}
+
+// reEvaluateRelatedImportance checks if new content should change the importance of related existing memories.
+// Only fires for high-importance IDENTITY/PLAN/RELATIONSHIP memories in the ambiguous similarity zone (0.5-0.85).
+func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID string, newContent string, similarMemories []*storage.SimilarityResult) {
+	reEvalTypes := map[storage.MemoryType]bool{
+		storage.TypeIdentity:     true,
+		storage.TypePlan:         true,
+		storage.TypeRelationship: true,
+	}
+
+	for _, sim := range similarMemories {
+		// Only ambiguous similarity zone — too similar means it's the same fact, too different means unrelated
+		if sim.Similarity < 0.5 || sim.Similarity > 0.85 {
+			continue
+		}
+		// Only high-value memory types
+		if !reEvalTypes[sim.Memory.Type] {
+			continue
+		}
+		// Only memories above importance threshold
+		if sim.Memory.Importance <= 0.5 {
+			continue
+		}
+		// Respect token budget
+		if !e.tokenBudget.CanSpend(entityID, 150) {
+			break
+		}
+
+		// Collect related memory contents for context
+		var relatedContents []string
+		for _, other := range similarMemories {
+			if other.Memory.ID != sim.Memory.ID {
+				relatedContents = append(relatedContents, other.Memory.Content)
+			}
+			if len(relatedContents) >= 3 {
+				break
+			}
+		}
+
+		resp, err := e.provider.ReEvaluateImportance(ctx, llm.ImportanceReEvalRequest{
+			NewContent:        newContent,
+			ExistingContent:   sim.Memory.Content,
+			CurrentImportance: sim.Memory.Importance,
+			CurrentType:       string(sim.Memory.Type),
+			RelatedMemories:   relatedContents,
+		})
+		if err != nil {
+			continue // LLM failure is non-fatal
+		}
+
+		e.tokenBudget.Record(entityID, 150)
+
+		if !resp.ShouldUpdate {
+			continue
+		}
+
+		// Clamp importance to valid range
+		newImportance := resp.NewImportance
+		if newImportance < 0 {
+			newImportance = 0
+		}
+		if newImportance > 1 {
+			newImportance = 1
+		}
+
+		_, err = e.store.UpdateMemory(ctx, sim.Memory.ID, storage.MemoryUpdate{
+			Importance: &newImportance,
+		})
+		if err != nil {
+			continue
+		}
+
+		e.store.LogHistory(ctx, &storage.HistoryEntry{
+			MemoryID:  sim.Memory.ID,
+			Operation: "importance_reeval",
+			Changes: map[string]any{
+				"old_importance": sim.Memory.Importance,
+				"new_importance": newImportance,
+				"trigger":        newContent,
+			},
+			Reason: resp.Reason,
+		})
+	}
 }
 
 // --- helper functions ---

@@ -41,11 +41,12 @@ func getExtractionToolParam() anthropic.ToolParam {
 							"type":               map[string]interface{}{"type": "string", "enum": []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
 							"importance":         map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
 							"confidence":         map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+							"sentiment":          map[string]interface{}{"type": "number", "minimum": -1, "maximum": 1},
 							"importance_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 							"confidence_factors": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 							"hedging_detected":   map[string]interface{}{"type": "boolean"},
 						},
-						"required": []string{"content", "type", "importance", "confidence"},
+						"required": []string{"content", "type", "importance", "confidence", "sentiment"},
 					},
 				},
 				"entities": map[string]interface{}{
@@ -160,7 +161,7 @@ func (a *AnthropicProvider) ExtractMemories(ctx context.Context, req ExtractionR
 }
 
 func (a *AnthropicProvider) ConsolidateMemories(ctx context.Context, req ConsolidationRequest) (*ConsolidationResponse, error) {
-	prompt := FormatConsolidationPrompt(req.Memories)
+	prompt := FormatConsolidationPrompt(req)
 	toolParam := anthropic.ToolParam{
 		Name:        "consolidate_memories",
 		Description: anthropic.String("Consolidate multiple similar memories into a single coherent memory"),
@@ -289,6 +290,182 @@ func (a *AnthropicProvider) ExtractState(ctx context.Context, req StateExtractio
 	var result StateExtractionResponse
 	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse Anthropic state extraction response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (a *AnthropicProvider) DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error) {
+	prompt := FormatConflictCheckPrompt(req)
+	toolParam := anthropic.ToolParam{
+		Name:        "detect_conflict",
+		Description: anthropic.String("Detect whether two memories conflict"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"contradicts":   map[string]interface{}{"type": "boolean"},
+				"conflict_type": map[string]interface{}{"type": "string", "enum": []string{"contradiction", "update", "temporal", "partial", "none"}},
+				"confidence":    map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+				"explanation":   map[string]interface{}{"type": "string"},
+				"resolution":    map[string]interface{}{"type": "string", "enum": []string{"use_new", "keep_existing", "merge", "keep_both"}},
+			},
+			Required: []string{"contradicts", "conflict_type", "confidence", "explanation", "resolution"},
+		},
+	}
+
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are a memory conflict detection system. Use the detect_conflict tool to return your analysis."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("detect_conflict"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic conflict check failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ConflictCheckResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic conflict check response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (a *AnthropicProvider) ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error) {
+	prompt := FormatImportanceReEvalPrompt(req)
+	toolParam := anthropic.ToolParam{
+		Name:        "reeval_importance",
+		Description: anthropic.String("Re-evaluate the importance of a memory given new information"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"new_importance": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+				"reason":         map[string]interface{}{"type": "string"},
+				"should_update":  map[string]interface{}{"type": "boolean"},
+			},
+			Required: []string{"new_importance", "reason", "should_update"},
+		},
+	}
+
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are a memory importance evaluation system. Use the reeval_importance tool to return your assessment."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("reeval_importance"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic importance re-eval failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result ImportanceReEvalResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic importance re-eval response: %w", err)
+	}
+
+	return &result, nil
+}
+
+func (a *AnthropicProvider) PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error) {
+	toolParam := anthropic.ToolParam{
+		Name:        "prioritize_actions",
+		Description: anthropic.String("Return the prioritized action plan"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"priority_action": map[string]interface{}{"type": "string", "description": "The single most important action"},
+				"action_items":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "All items ordered by priority"},
+				"reasoning":       map[string]interface{}{"type": "string", "description": "Brief explanation of priority ordering"},
+				"urgency":         map[string]interface{}{"type": "string", "enum": []string{"immediate", "soon", "can_wait"}},
+			},
+		},
+	}
+
+	prompt := FormatActionPriorityPrompt(req)
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are an AI agent executive function that prioritizes actions. Use the prioritize_actions tool to return your assessment."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("prioritize_actions"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic action priority failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var priorityResult ActionPriorityResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &priorityResult); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic action priority response: %w", err)
+	}
+
+	return &priorityResult, nil
+}
+
+func (a *AnthropicProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
+	toolParam := anthropic.ToolParam{
+		Name:        "summarize_graph",
+		Description: anthropic.String("Summarize the knowledge graph connections"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"summary":    map[string]interface{}{"type": "string", "description": "Natural language summary of connections"},
+				"confidence": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+			},
+		},
+	}
+
+	prompt := FormatGraphSummaryPrompt(req)
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are a knowledge graph reasoning system. Use the summarize_graph tool to return your analysis."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("summarize_graph"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic graph summary failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result GraphSummaryResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic graph summary response: %w", err)
 	}
 
 	return &result, nil

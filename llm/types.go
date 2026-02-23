@@ -32,6 +32,7 @@ type ExtractedMemory struct {
 	Type              string   `json:"type"`
 	Importance        float64  `json:"importance"`
 	Confidence        float64  `json:"confidence"`
+	Sentiment         float64  `json:"sentiment"` // -1.0 to 1.0
 	ImportanceFactors []string `json:"importance_factors,omitempty"`
 	ConfidenceFactors []string `json:"confidence_factors,omitempty"`
 	HedgingDetected   bool     `json:"hedging_detected"`
@@ -65,7 +66,12 @@ type ExtractionRequest struct {
 
 // ConsolidationRequest contains memories to consolidate.
 type ConsolidationRequest struct {
-	Memories []string
+	Memories          []string
+	EntityContext     []string  // "Alice (person)", "Google (organization)"
+	RelationshipContext []string // "Alice works_at Google"
+	ImportanceScores  []float64 // importance score per memory (parallel to Memories)
+	ImportanceFactors []string  // deduplicated importance factors across all memories
+	SentimentValues   []float64 // sentiment per memory (parallel to Memories)
 }
 
 // ConsolidationResponse contains the consolidated memory.
@@ -88,6 +94,67 @@ type CustomExtractionResponse struct {
 	ExtractedData map[string]any `json:"extracted_data"`
 	Confidence    float64        `json:"confidence"`
 	Reasoning     string         `json:"reasoning"`
+}
+
+// ConflictCheckRequest contains input for LLM-based conflict detection.
+type ConflictCheckRequest struct {
+	NewContent      string
+	ExistingContent string
+	MemoryType      string
+	Context         string // brief context about the entity
+}
+
+// ConflictCheckResponse contains the LLM's conflict analysis.
+type ConflictCheckResponse struct {
+	Contradicts  bool    `json:"contradicts"`
+	ConflictType string  `json:"conflict_type"` // contradiction, update, temporal, partial, none
+	Confidence   float64 `json:"confidence"`
+	Explanation  string  `json:"explanation"`
+	Resolution   string  `json:"resolution"` // use_new, keep_existing, merge, keep_both
+}
+
+// ImportanceReEvalRequest contains input for adaptive importance re-evaluation.
+type ImportanceReEvalRequest struct {
+	NewContent        string
+	ExistingContent   string
+	CurrentImportance float64
+	CurrentType       string
+	RelatedMemories   []string
+}
+
+// ImportanceReEvalResponse contains the re-evaluated importance.
+type ImportanceReEvalResponse struct {
+	NewImportance float64 `json:"new_importance"`
+	Reason        string  `json:"reason"`
+	ShouldUpdate  bool    `json:"should_update"`
+}
+
+// ActionPriorityRequest contains input for LLM-powered heartbeat prioritization.
+type ActionPriorityRequest struct {
+	Summary       string // the raw heartbeat summary
+	AgentContext  string // what the agent is currently doing
+	EntityContext string // who the entity is
+}
+
+// ActionPriorityResponse contains the LLM's prioritized action plan.
+type ActionPriorityResponse struct {
+	PriorityAction string   `json:"priority_action"`
+	ActionItems    []string `json:"action_items"`
+	Reasoning      string   `json:"reasoning"`
+	Urgency        string   `json:"urgency"` // immediate, soon, can_wait
+}
+
+// GraphSummaryRequest contains input for LLM-powered graph reasoning.
+type GraphSummaryRequest struct {
+	Entities      []string // entity names/descriptions in the path
+	Relationships []string // "A works_at B" formatted strings
+	Question      string   // optional: specific question about the graph
+}
+
+// GraphSummaryResponse contains the LLM's graph summary.
+type GraphSummaryResponse struct {
+	Summary    string  `json:"summary"`
+	Confidence float64 `json:"confidence"`
 }
 
 // StateExtractionRequest contains input for automatic state extraction.

@@ -88,7 +88,7 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context, entityID string,
 	}
 
 	for _, sim := range similar {
-		conflict := d.checkConflict(newContent, sim.Memory, memoryType)
+		conflict := d.checkConflict(ctx, newContent, sim.Memory, sim.Similarity, memoryType)
 		if conflict != nil {
 			result.Conflicts = append(result.Conflicts, *conflict)
 			result.HasConflict = true
@@ -102,7 +102,8 @@ func (d *ConflictDetector) DetectConflicts(ctx context.Context, entityID string,
 	return result, nil
 }
 
-func (d *ConflictDetector) checkConflict(newContent string, existing *storage.Memory, newType storage.MemoryType) *Conflict {
+func (d *ConflictDetector) checkConflict(ctx context.Context, newContent string, existing *storage.Memory, similarity float64, newType storage.MemoryType) *Conflict {
+	// Fast path: pattern matching (free, instant)
 	if hasNegationPattern(newContent, existing.Content) {
 		return &Conflict{
 			NewContent: newContent, ExistingMemory: existing,
@@ -129,11 +130,62 @@ func (d *ConflictDetector) checkConflict(newContent string, existing *storage.Me
 		}
 	}
 
-	if d.config.EnableLLMConflictCheck {
-		return d.heuristicConflictCheck(newContent, existing)
+	// Heuristic check (numbers, booleans)
+	heuristic := d.heuristicConflictCheck(newContent, existing)
+	if heuristic != nil {
+		return heuristic
+	}
+
+	// LLM escalation: only when pattern matching found nothing but similarity is suspicious
+	// Similarity 0.6-0.85 with same subject = ambiguous zone worth checking with LLM
+	if d.config.EnableLLMConflictCheck && d.provider != nil &&
+		similarity >= 0.6 && similarity <= 0.85 && isSameSubject(newContent, existing.Content) {
+		return d.llmConflictCheck(ctx, newContent, existing, newType)
 	}
 
 	return nil
+}
+
+// llmConflictCheck escalates to the LLM for semantic conflict detection.
+func (d *ConflictDetector) llmConflictCheck(ctx context.Context, newContent string, existing *storage.Memory, newType storage.MemoryType) *Conflict {
+	resp, err := d.provider.DetectConflict(ctx, llm.ConflictCheckRequest{
+		NewContent:      newContent,
+		ExistingContent: existing.Content,
+		MemoryType:      string(newType),
+	})
+	if err != nil {
+		// LLM failure is non-fatal - fall back to no conflict
+		return nil
+	}
+
+	if !resp.Contradicts {
+		return nil
+	}
+
+	conflictType := ConflictType(resp.ConflictType)
+	switch conflictType {
+	case ConflictTypeContradiction, ConflictTypeUpdate, ConflictTypeTemporal, ConflictTypePartial:
+		// valid
+	default:
+		return nil
+	}
+
+	resolution := ConflictResolution(resp.Resolution)
+	switch resolution {
+	case ResolutionUseNew, ResolutionKeepExisting, ResolutionMerge, ResolutionKeepBoth:
+		// valid
+	default:
+		resolution = ResolutionAskUser
+	}
+
+	return &Conflict{
+		NewContent:   newContent,
+		ExistingMemory: existing,
+		ConflictType: conflictType,
+		Confidence:   resp.Confidence,
+		Resolution:   resolution,
+		Explanation:  resp.Explanation,
+	}
 }
 
 func hasNegationPattern(newContent, existingContent string) bool {

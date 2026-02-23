@@ -150,12 +150,21 @@ func (d *DuplicateDetector) MergeMemories(ctx context.Context, existing *storage
 		return nil, err
 	}
 
+	// Track provenance: record that this merge was derived from the existing memory
+	if updated.DerivedFrom == nil {
+		updated.DerivedFrom = storage.StringSlice{}
+	}
+	if existing.ID != "" {
+		updated.DerivedFrom = append(updated.DerivedFrom, existing.ID)
+	}
+
 	d.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  existing.ID,
 		Operation: "merge",
 		Changes: map[string]any{
 			"original_content": existing.Content,
 			"merged_content":   mergedContent,
+			"derived_from":     updated.DerivedFrom,
 		},
 		Reason: "merged with near-duplicate content",
 	})
