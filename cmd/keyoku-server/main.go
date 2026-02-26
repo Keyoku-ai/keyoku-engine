@@ -83,6 +83,11 @@ func main() {
 	mux.HandleFunc("POST /api/v1/watcher/watch", handlers.HandleWatcherWatch)
 	mux.HandleFunc("POST /api/v1/watcher/unwatch", handlers.HandleWatcherUnwatch)
 
+	// Schedule
+	mux.HandleFunc("POST /api/v1/schedule/ack", handlers.HandleScheduleAck)
+	mux.HandleFunc("GET /api/v1/scheduled", handlers.HandleListScheduled)
+	mux.HandleFunc("PUT /api/v1/memories/{id}/tags", handlers.HandleUpdateTags)
+
 	// Teams
 	mux.HandleFunc("POST /api/v1/teams", handlers.HandleCreateTeam)
 	mux.HandleFunc("GET /api/v1/teams/", handlers.HandleGetTeam)

@@ -36,6 +36,7 @@ type ExtractedMemory struct {
 	ImportanceFactors []string `json:"importance_factors,omitempty"`
 	ConfidenceFactors []string `json:"confidence_factors,omitempty"`
 	HedgingDetected   bool     `json:"hedging_detected"`
+	Tags              []string `json:"tags,omitempty"` // e.g., ["cron:daily:08:00"] for schedule-tagged memories
 }
 
 // MemoryUpdate represents a suggested update to an existing memory.

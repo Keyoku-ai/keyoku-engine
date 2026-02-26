@@ -208,6 +208,7 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 		Type:     EventHeartbeatSignal,
 		EntityID: entityID,
 		Data: map[string]any{
+			"should_act":      true,
 			"summary":         result.Summary,
 			"pending_work":    len(result.PendingWork),
 			"deadlines":       len(result.Deadlines),
@@ -228,9 +229,11 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			AgentID:  m.AgentID,
 			Memory:   m,
 			Data: map[string]any{
+				"memory_id":  m.ID,
 				"content":    m.Content,
 				"type":       string(m.Type),
 				"importance": m.Importance,
+				"should_act": true,
 			},
 		})
 	}
@@ -242,9 +245,11 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			AgentID:  m.AgentID,
 			Memory:   m,
 			Data: map[string]any{
+				"memory_id":  m.ID,
 				"content":    m.Content,
 				"expires_at": m.ExpiresAt,
 				"remaining":  time.Until(*m.ExpiresAt).String(),
+				"should_act": true,
 			},
 		})
 	}
@@ -256,8 +261,10 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			AgentID:  m.AgentID,
 			Memory:   m,
 			Data: map[string]any{
-				"content": m.Content,
-				"tags":    m.Tags,
+				"memory_id":  m.ID,
+				"content":    m.Content,
+				"tags":       m.Tags,
+				"should_act": true,
 			},
 		})
 	}
@@ -269,8 +276,10 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			AgentID:  m.AgentID,
 			Memory:   m,
 			Data: map[string]any{
+				"memory_id":  m.ID,
 				"content":    m.Content,
 				"importance": m.Importance,
+				"should_act": true,
 			},
 		})
 	}
@@ -281,7 +290,9 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			EntityID: entityID,
 			Memory:   c.MemoryA,
 			Data: map[string]any{
-				"reason": c.Reason,
+				"memory_id":  c.MemoryA.ID,
+				"reason":     c.Reason,
+				"should_act": true,
 			},
 		})
 	}
@@ -293,7 +304,9 @@ func (w *Watcher) emitHeartbeatEvents(entityID string, result *HeartbeatResult) 
 			AgentID:  m.AgentID,
 			Memory:   m,
 			Data: map[string]any{
-				"content": m.Content,
+				"memory_id":  m.ID,
+				"content":    m.Content,
+				"should_act": true,
 			},
 		})
 	}

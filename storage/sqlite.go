@@ -678,6 +678,16 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 		}
 		where = append(where, fmt.Sprintf("state IN (%s)", strings.Join(ph, ",")))
 	}
+	if len(query.Tags) > 0 {
+		for _, tag := range query.Tags {
+			where = append(where, "tags LIKE ?")
+			args = append(args, "%"+tag+"%")
+		}
+	}
+	if query.TagPrefix != "" {
+		where = append(where, "tags LIKE ?")
+		args = append(args, "%"+query.TagPrefix+"%")
+	}
 
 	whereClause := ""
 	if len(where) > 0 {

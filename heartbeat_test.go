@@ -67,7 +67,7 @@ func TestBuildSummary(t *testing.T) {
 			{Content: "deadline approaching", ExpiresAt: &expires},
 		},
 		Scheduled: []*Memory{
-			{Content: "daily check"},
+			{Content: "daily check", Tags: storage.StringSlice{"cron:daily:08:00"}},
 		},
 		Decaying: []*Memory{
 			{Content: "important fact", Importance: 0.95},
@@ -101,6 +101,9 @@ func TestBuildSummary(t *testing.T) {
 	}
 	if !strings.Contains(summary, "STALE MONITORS") {
 		t.Error("summary missing STALE MONITORS")
+	}
+	if !strings.Contains(summary, "[schedule: cron:daily:08:00]") {
+		t.Error("summary missing schedule tag annotation")
 	}
 }
 
@@ -326,5 +329,91 @@ func TestHeartbeatCheckTypes(t *testing.T) {
 	}
 	if len(allChecks) != 6 {
 		t.Errorf("allChecks = %d, want 6", len(allChecks))
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_TimeAnchored(t *testing.T) {
+	// Simulate: cron:daily:08:00, last accessed yesterday at 8:01am,
+	// current time is today at 8:05am → should be due
+	yesterday8am := time.Date(2026, 2, 25, 8, 1, 0, 0, time.Local)
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{
+					Content:        "check the news",
+					Tags:           storage.StringSlice{"cron:daily:08:00"},
+					LastAccessedAt: &yesterday8am,
+					CreatedAt:      yesterday8am.Add(-48 * time.Hour),
+					State:          storage.StateActive,
+				},
+			}, nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckScheduled))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+
+	// The schedule parser uses time.Now() internally so we can't exactly control
+	// the outcome, but cron:daily:08:00 with last run >24h ago should be due
+	// at any time today after 8:00am (and current time is well past 8am on 2/26)
+	if len(result.Scheduled) != 1 {
+		t.Errorf("Scheduled = %d, want 1 (time-anchored daily schedule should be due)", len(result.Scheduled))
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_NotDueYet(t *testing.T) {
+	// cron:daily with last access 12 hours ago → not due yet (interval-based)
+	recent := time.Now().Add(-12 * time.Hour)
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{
+					Content:        "daily task",
+					Tags:           storage.StringSlice{"cron:daily"},
+					LastAccessedAt: &recent,
+					CreatedAt:      recent.Add(-48 * time.Hour),
+					State:          storage.StateActive,
+				},
+			}, nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckScheduled))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if len(result.Scheduled) != 0 {
+		t.Errorf("Scheduled = %d, want 0 (cron:daily accessed 12h ago shouldn't be due)", len(result.Scheduled))
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_EveryInterval(t *testing.T) {
+	// cron:every:2h with last access 3 hours ago → should be due
+	threeHoursAgo := time.Now().Add(-3 * time.Hour)
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{
+					Content:        "frequent check",
+					Tags:           storage.StringSlice{"cron:every:2h"},
+					LastAccessedAt: &threeHoursAgo,
+					CreatedAt:      threeHoursAgo.Add(-24 * time.Hour),
+					State:          storage.StateActive,
+				},
+			}, nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckScheduled))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if len(result.Scheduled) != 1 {
+		t.Errorf("Scheduled = %d, want 1 (cron:every:2h with 3h since last run)", len(result.Scheduled))
 	}
 }

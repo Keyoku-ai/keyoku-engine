@@ -521,6 +521,69 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// --- Schedule Handlers ---
+
+// HandleScheduleAck acknowledges a scheduled memory run, advancing its last_accessed_at.
+func (h *Handlers) HandleScheduleAck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MemoryID string `json:"memory_id"`
+	}
+	if err := decodeBody(r, &req); err != nil || req.MemoryID == "" {
+		writeError(w, http.StatusBadRequest, "memory_id is required")
+		return
+	}
+
+	if err := h.k.AcknowledgeSchedule(r.Context(), req.MemoryID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "acknowledged", "memory_id": req.MemoryID})
+}
+
+// HandleListScheduled returns all cron-tagged memories for an entity.
+func (h *Handlers) HandleListScheduled(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity_id")
+	if entityID == "" {
+		writeError(w, http.StatusBadRequest, "entity_id query parameter is required")
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+
+	memories, err := h.k.ListScheduled(r.Context(), entityID, agentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
+}
+
+// HandleUpdateTags updates the tags on a memory.
+func (h *Handlers) HandleUpdateTags(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")
+	id = strings.TrimSuffix(id, "/tags")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "memory id is required")
+		return
+	}
+
+	var req struct {
+		Tags []string `json:"tags"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := h.k.UpdateTags(r.Context(), id, req.Tags); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "memory_id": id, "tags": req.Tags})
+}
+
 // --- Team Handlers ---
 
 type teamJSON struct {

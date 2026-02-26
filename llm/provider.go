@@ -87,6 +87,17 @@ Base scores by type: IDENTITY=0.8, PREFERENCE=0.6, RELATIONSHIP=0.7, EVENT=0.5, 
 - NEUTRAL (-0.3 to 0.3): factual statements, descriptions without emotion
 Examples: "I love my new job" → 0.8, "I'm frustrated with the commute" → -0.6, "I work at Google" → 0.0
 
+## SCHEDULE DETECTION
+If the input expresses a recurring or time-based intent, add a "tags" array with a cron tag:
+- "every morning at 8" → tags: ["cron:daily:08:00"]
+- "check this every Monday at 9am" → tags: ["cron:weekly:mon:09:00"]
+- "remind me every weekday at 8:30" → tags: ["cron:weekdays:08:30"]
+- "on the 1st of every month at 9am" → tags: ["cron:monthly:1:09:00"]
+- "every 4 hours" → tags: ["cron:every:4h"]
+- "every day" (no specific time) → tags: ["cron:daily"]
+- "every hour" → tags: ["cron:hourly"]
+Only add schedule tags when the user clearly expresses recurring intent. Do NOT tag one-time events.
+
 ## ENTITY EXTRACTION
 Extract named entities mentioned in the input:
 - PERSON: People's names (use their FULL name as the canonical form)
@@ -135,7 +146,8 @@ Return JSON matching this exact schema:
       "sentiment": -1.0 to 1.0,
       "importance_factors": ["array", "of", "strings", "explaining", "importance"],
       "confidence_factors": ["array", "of", "strings", "explaining", "confidence"],
-      "hedging_detected": true/false
+      "hedging_detected": true/false,
+      "tags": ["optional", "array", "e.g.", "cron:daily:08:00"]
     }
   ],
   "entities": [

@@ -228,16 +228,18 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		if err == nil {
 			now := time.Now()
 			for _, m := range allActive {
-				if interval, ok := parseCronTag(m.Tags); ok {
-					lastAccess := m.CreatedAt
-					if m.LastAccessedAt != nil {
-						lastAccess = *m.LastAccessedAt
-					}
-					if now.Sub(lastAccess) >= interval {
-						result.Scheduled = append(result.Scheduled, m)
-						if len(result.Scheduled) >= cfg.maxResults {
-							break
-						}
+				sched, err := ParseScheduleFromTags(m.Tags)
+				if err != nil || sched == nil {
+					continue
+				}
+				lastRun := m.CreatedAt
+				if m.LastAccessedAt != nil {
+					lastRun = *m.LastAccessedAt
+				}
+				if sched.IsDue(lastRun, now) {
+					result.Scheduled = append(result.Scheduled, m)
+					if len(result.Scheduled) >= cfg.maxResults {
+						break
 					}
 				}
 			}
@@ -356,7 +358,8 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 
 // --- helpers ---
 
-// parseCronTag looks for cron:* tags and returns the interval.
+// Deprecated: parseCronTag is superseded by ParseScheduleFromTags in schedule.go.
+// Kept temporarily for any external callers; will be removed in a future release.
 func parseCronTag(tags []string) (time.Duration, bool) {
 	for _, tag := range tags {
 		if !strings.HasPrefix(tag, "cron:") {
@@ -452,7 +455,18 @@ func buildSummary(result *HeartbeatResult) string {
 	if len(result.Scheduled) > 0 {
 		parts = append(parts, fmt.Sprintf("SCHEDULED TASKS DUE (%d):", len(result.Scheduled)))
 		for _, m := range result.Scheduled {
-			parts = append(parts, fmt.Sprintf("  - %s", m.Content))
+			schedTag := ""
+			for _, t := range m.Tags {
+				if strings.HasPrefix(t, "cron:") {
+					schedTag = t
+					break
+				}
+			}
+			if schedTag != "" {
+				parts = append(parts, fmt.Sprintf("  - %s [schedule: %s]", m.Content, schedTag))
+			} else {
+				parts = append(parts, fmt.Sprintf("  - %s", m.Content))
+			}
 		}
 	}
 

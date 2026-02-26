@@ -193,7 +193,8 @@ type MemoryQuery struct {
 	Visibility []MemoryVisibility // Filter by specific visibility levels
 	VisibilityFor *VisibilityContext // Build visibility clause for an agent (private+team+global resolution)
 	Types      []MemoryType
-	Tags       []string
+	Tags       []string // Exact tag match (all must be present)
+	TagPrefix  string   // Filter tags by prefix (e.g., "cron:" matches any cron-tagged memory)
 	States     []MemoryState
 	MinScore   float64
 	Limit      int

@@ -575,6 +575,33 @@ func (as *AgentStateService) History(ctx context.Context, entityID, agentID, sch
 	return as.sm.History(ctx, entityID, agentID, schemaName, limit)
 }
 
+// --- Schedule API ---
+
+// AcknowledgeSchedule marks a scheduled memory as run by advancing its last_accessed_at.
+// Call this after the agent has acted on a scheduled task to prevent re-firing.
+func (k *Keyoku) AcknowledgeSchedule(ctx context.Context, memoryID string) error {
+	return k.store.UpdateAccessStats(ctx, []string{memoryID})
+}
+
+// ListScheduled returns all cron-tagged memories for an entity/agent pair.
+func (k *Keyoku) ListScheduled(ctx context.Context, entityID string, agentID string) ([]*Memory, error) {
+	return k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:  entityID,
+		AgentID:   agentID,
+		TagPrefix: "cron:",
+		States:    []storage.MemoryState{storage.StateActive},
+		Limit:     100,
+	})
+}
+
+// UpdateTags sets the tags on a memory, replacing any existing tags.
+func (k *Keyoku) UpdateTags(ctx context.Context, memoryID string, tags []string) error {
+	_, err := k.store.UpdateMemory(ctx, memoryID, storage.MemoryUpdate{
+		Tags: &tags,
+	})
+	return err
+}
+
 // Close closes the Keyoku instance and releases all resources.
 func (k *Keyoku) Close() error {
 	if k.watcher != nil {

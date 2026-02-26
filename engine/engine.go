@@ -479,6 +479,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		ExtractionModel:    e.provider.Model(),
 		ImportanceFactors:  extracted.ImportanceFactors,
 		ConfidenceFactors:  extracted.ConfidenceFactors,
+		Tags:               extracted.Tags,
 	}
 
 	if err := e.store.CreateMemory(ctx, mem); err != nil {
