@@ -238,6 +238,19 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				}
 				if sched.IsDue(lastRun, now) {
 					result.Scheduled = append(result.Scheduled, m)
+
+					// Auto-acknowledge: advance last_accessed_at so the task
+					// doesn't re-fire until the next scheduled interval.
+					_ = k.store.UpdateAccessStats(ctx, []string{m.ID})
+
+					// One-time cleanup: archive cron:once:* memories after they fire.
+					if sched.Type == ScheduleOnce {
+						archivedState := storage.StateArchived
+						_, _ = k.store.UpdateMemory(ctx, m.ID, storage.MemoryUpdate{
+							State: &archivedState,
+						})
+					}
+
 					if len(result.Scheduled) >= cfg.maxResults {
 						break
 					}

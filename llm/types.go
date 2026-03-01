@@ -41,9 +41,10 @@ type ExtractedMemory struct {
 
 // MemoryUpdate represents a suggested update to an existing memory.
 type MemoryUpdate struct {
-	Query      string `json:"query"`
-	NewContent string `json:"new_content"`
-	Reason     string `json:"reason"`
+	Query      string   `json:"query"`
+	NewContent string   `json:"new_content"`
+	Reason     string   `json:"reason"`
+	Tags       []string `json:"tags,omitempty"` // allows LLM to update cron/schedule tags
 }
 
 // MemoryDelete represents a suggested deletion of an existing memory.

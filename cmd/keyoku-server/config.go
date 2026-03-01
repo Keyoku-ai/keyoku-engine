@@ -26,8 +26,8 @@ func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
 		Port:               18900,
 		DBPath:             "./keyoku.db",
-		ExtractionProvider: "openai",
-		ExtractionModel:    "gpt-4o-mini",
+		ExtractionProvider: "gemini",
+		ExtractionModel:    "gemini-3-flash-preview",
 		EmbeddingModel:     "text-embedding-3-small",
 		SchedulerEnabled:   &enabled,
 	}

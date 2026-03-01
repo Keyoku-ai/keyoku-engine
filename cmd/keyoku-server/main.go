@@ -84,7 +84,10 @@ func main() {
 	mux.HandleFunc("POST /api/v1/watcher/unwatch", handlers.HandleWatcherUnwatch)
 
 	// Schedule
+	mux.HandleFunc("POST /api/v1/schedule", handlers.HandleCreateSchedule)
 	mux.HandleFunc("POST /api/v1/schedule/ack", handlers.HandleScheduleAck)
+	mux.HandleFunc("PUT /api/v1/schedule/", handlers.HandleUpdateSchedule)
+	mux.HandleFunc("DELETE /api/v1/schedule/", handlers.HandleCancelSchedule)
 	mux.HandleFunc("GET /api/v1/scheduled", handlers.HandleListScheduled)
 	mux.HandleFunc("PUT /api/v1/memories/{id}/tags", handlers.HandleUpdateTags)
 

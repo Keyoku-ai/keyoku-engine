@@ -190,6 +190,69 @@ func TestDecayProcessor_Process_TransitionError(t *testing.T) {
 	}
 }
 
+func TestDecayProcessor_Process_CronTagExempt(t *testing.T) {
+	// Cron-tagged memories should NEVER decay, even with old access times.
+	oldAccess := time.Now().Add(-365 * 24 * time.Hour)
+	memories := []*storage.Memory{
+		{
+			ID:             "cron-mem",
+			State:          storage.StateActive,
+			LastAccessedAt: &oldAccess,
+			Stability:      1, // Very low stability — would normally decay immediately
+			Tags:           storage.StringSlice{"cron:daily:08:00"},
+		},
+		{
+			ID:             "normal-mem",
+			State:          storage.StateActive,
+			LastAccessedAt: &oldAccess,
+			Stability:      1,
+		},
+	}
+
+	var transitions []storage.StateTransition
+	store := &mockStore{
+		getActiveMemoriesForDecayFn: func(_ context.Context, _, offset int) ([]*storage.Memory, error) {
+			if offset > 0 {
+				return nil, nil
+			}
+			return memories, nil
+		},
+		batchTransitionStatesFn: func(_ context.Context, t []storage.StateTransition) (int, error) {
+			transitions = append(transitions, t...)
+			return len(t), nil
+		},
+	}
+
+	p := NewDecayProcessor(store, nil, DefaultDecayJobConfig())
+	result, err := p.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process error = %v", err)
+	}
+
+	// Both are counted as processed
+	if result.ItemsProcessed != 2 {
+		t.Errorf("ItemsProcessed = %d, want 2", result.ItemsProcessed)
+	}
+
+	// The cron-tagged memory should NOT appear in transitions
+	for _, tr := range transitions {
+		if tr.MemoryID == "cron-mem" {
+			t.Error("cron-tagged memory should be exempt from decay transitions")
+		}
+	}
+
+	// The normal memory should have been transitioned
+	foundNormal := false
+	for _, tr := range transitions {
+		if tr.MemoryID == "normal-mem" {
+			foundNormal = true
+		}
+	}
+	if !foundNormal {
+		t.Error("normal memory should have been transitioned")
+	}
+}
+
 func TestDecayProcessor_Process_ResultDetails(t *testing.T) {
 	oldAccess := time.Now().Add(-365 * 24 * time.Hour)
 	store := &mockStore{

@@ -559,6 +559,78 @@ func (h *Handlers) HandleListScheduled(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
 }
 
+// HandleCreateSchedule creates a new scheduled memory with a cron tag.
+func (h *Handlers) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EntityID string `json:"entity_id"`
+		AgentID  string `json:"agent_id"`
+		Content  string `json:"content"`
+		CronTag  string `json:"cron_tag"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.EntityID == "" || req.Content == "" || req.CronTag == "" {
+		writeError(w, http.StatusBadRequest, "entity_id, content, and cron_tag are required")
+		return
+	}
+
+	mem, err := h.k.CreateSchedule(r.Context(), req.EntityID, req.AgentID, req.Content, req.CronTag)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, toMemoryJSON(mem))
+}
+
+// HandleUpdateSchedule modifies an existing scheduled memory's cron tag and/or content.
+func (h *Handlers) HandleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/schedule/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "schedule id is required in path")
+		return
+	}
+
+	var req struct {
+		CronTag    string  `json:"cron_tag"`
+		NewContent *string `json:"new_content,omitempty"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.CronTag == "" {
+		writeError(w, http.StatusBadRequest, "cron_tag is required")
+		return
+	}
+
+	mem, err := h.k.UpdateSchedule(r.Context(), id, req.CronTag, req.NewContent)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toMemoryJSON(mem))
+}
+
+// HandleCancelSchedule archives a scheduled memory, cancelling the schedule.
+func (h *Handlers) HandleCancelSchedule(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/schedule/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "schedule id is required in path")
+		return
+	}
+
+	if err := h.k.CancelSchedule(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled", "memory_id": id})
+}
+
 // HandleUpdateTags updates the tags on a memory.
 func (h *Handlers) HandleUpdateTags(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")

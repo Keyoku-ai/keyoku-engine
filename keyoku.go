@@ -8,8 +8,12 @@ package keyoku
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"math"
+	"strings"
 
 	"github.com/keyoku-ai/keyoku-embedded/embedder"
 	"github.com/keyoku-ai/keyoku-embedded/engine"
@@ -584,14 +588,244 @@ func (k *Keyoku) AcknowledgeSchedule(ctx context.Context, memoryID string) error
 }
 
 // ListScheduled returns all cron-tagged memories for an entity/agent pair.
+// Defense-in-depth: also recovers any cron memories that accidentally decayed to stale.
 func (k *Keyoku) ListScheduled(ctx context.Context, entityID string, agentID string) ([]*Memory, error) {
-	return k.store.QueryMemories(ctx, storage.MemoryQuery{
+	// Primary: fetch active cron memories
+	active, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:  entityID,
 		AgentID:   agentID,
 		TagPrefix: "cron:",
 		States:    []storage.MemoryState{storage.StateActive},
 		Limit:     100,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Defense-in-depth: check for stale cron memories and auto-recover them
+	stale, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:  entityID,
+		AgentID:   agentID,
+		TagPrefix: "cron:",
+		States:    []storage.MemoryState{storage.StateStale},
+		Limit:     100,
+	})
+	if err != nil {
+		k.logger.Warn("failed to query stale cron memories for recovery", "error", err)
+	}
+
+	for _, mem := range stale {
+		activeState := storage.StateActive
+		_, recoverErr := k.store.UpdateMemory(ctx, mem.ID, storage.MemoryUpdate{State: &activeState})
+		if recoverErr != nil {
+			k.logger.Error("failed to recover stale cron memory", "id", mem.ID, "error", recoverErr)
+			continue
+		}
+		k.logger.Info("recovered stale cron memory to active", "id", mem.ID, "content", mem.Content)
+		mem.State = storage.StateActive
+		active = append(active, mem)
+	}
+
+	return active, nil
+}
+
+// CreateSchedule creates a new scheduled memory with a cron tag.
+// It performs duplicate detection: if an existing active schedule for the same entity/agent
+// has content that matches, the old schedule is archived before creating the new one.
+func (k *Keyoku) CreateSchedule(ctx context.Context, entityID, agentID, content, cronTag string) (*Memory, error) {
+	// Validate the cron tag
+	if _, err := ParseSchedule(cronTag); err != nil {
+		return nil, fmt.Errorf("invalid cron tag: %w", err)
+	}
+
+	// Duplicate detection: archive any existing schedule with matching content
+	existing, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:  entityID,
+		AgentID:   agentID,
+		TagPrefix: "cron:",
+		States:    []storage.MemoryState{storage.StateActive},
+		Limit:     100,
+	})
+	if err == nil {
+		for _, mem := range existing {
+			if isScheduleContentMatch(mem.Content, content) {
+				archivedState := storage.StateArchived
+				k.store.UpdateMemory(ctx, mem.ID, storage.MemoryUpdate{State: &archivedState})
+				k.store.LogHistory(ctx, &storage.HistoryEntry{
+					MemoryID:  mem.ID,
+					Operation: "schedule_replaced",
+					Changes: map[string]any{
+						"replaced_by_content": content,
+						"replaced_by_cron":    cronTag,
+					},
+					Reason: "duplicate schedule detected during CreateSchedule",
+				})
+				k.logger.Info("archived duplicate schedule", "old_id", mem.ID, "content", content)
+			}
+		}
+	}
+
+	// Generate embedding for vector search
+	embedding, err := k.emb.Embed(ctx, content)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embedding: %w", err)
+	}
+
+	// Resolve team membership
+	teamID := ""
+	if agentID != "" {
+		if resolved, resolveErr := k.store.GetTeamForAgent(ctx, agentID); resolveErr == nil && resolved != "" {
+			teamID = resolved
+		}
+	}
+
+	// Determine visibility (team if agent has a team, otherwise private)
+	visibility := storage.VisibilityPrivate
+	if teamID != "" {
+		visibility = storage.VisibilityTeam
+	}
+
+	tags := storage.StringSlice{cronTag}
+
+	mem := &storage.Memory{
+		EntityID:   entityID,
+		AgentID:    agentID,
+		TeamID:     teamID,
+		Content:    content,
+		Hash:       scheduleContentHash(content),
+		Embedding:  encodeEmbeddingBytes(embedding),
+		Type:       storage.TypePlan,
+		Tags:       tags,
+		Importance: 0.9, // Schedules are high importance
+		Confidence: 1.0, // Explicitly created, full confidence
+		Stability:  365, // Max stability — decay processor skips cron anyway
+		State:      storage.StateActive,
+		Visibility: visibility,
+		Source:     "schedule_api",
+	}
+
+	if err := k.store.CreateMemory(ctx, mem); err != nil {
+		return nil, fmt.Errorf("failed to create schedule memory: %w", err)
+	}
+
+	k.store.LogHistory(ctx, &storage.HistoryEntry{
+		MemoryID:  mem.ID,
+		Operation: "schedule_created",
+		Changes: map[string]any{
+			"cron_tag": cronTag,
+			"content":  content,
+		},
+		Reason: "schedule created via CreateSchedule API",
+	})
+
+	return mem, nil
+}
+
+// UpdateSchedule modifies an existing scheduled memory's cron tag and/or content.
+// It replaces the cron tag while preserving any non-cron tags.
+func (k *Keyoku) UpdateSchedule(ctx context.Context, memoryID, newCronTag string, newContent *string) (*Memory, error) {
+	// Validate the new cron tag
+	if _, err := ParseSchedule(newCronTag); err != nil {
+		return nil, fmt.Errorf("invalid cron tag: %w", err)
+	}
+
+	// Get the existing memory
+	mem, err := k.store.GetMemory(ctx, memoryID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule not found: %w", err)
+	}
+
+	// Verify it's actually a cron-tagged memory
+	hasCron := false
+	for _, tag := range mem.Tags {
+		if strings.HasPrefix(tag, "cron:") {
+			hasCron = true
+			break
+		}
+	}
+	if !hasCron {
+		return nil, fmt.Errorf("memory %s is not a scheduled memory (no cron tag)", memoryID)
+	}
+
+	// Build new tags: replace all cron:* tags with the new one, keep non-cron tags
+	var newTags []string
+	for _, tag := range mem.Tags {
+		if !strings.HasPrefix(tag, "cron:") {
+			newTags = append(newTags, tag)
+		}
+	}
+	newTags = append(newTags, newCronTag)
+
+	update := storage.MemoryUpdate{
+		Tags: &newTags,
+	}
+	if newContent != nil {
+		update.Content = newContent
+	}
+
+	// Ensure memory is active (recover if stale)
+	activeState := storage.StateActive
+	update.State = &activeState
+
+	updated, err := k.store.UpdateMemory(ctx, memoryID, update)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update schedule: %w", err)
+	}
+
+	changes := map[string]any{
+		"old_cron_tag": mem.Tags,
+		"new_cron_tag": newCronTag,
+	}
+	if newContent != nil {
+		changes["old_content"] = mem.Content
+		changes["new_content"] = *newContent
+	}
+
+	k.store.LogHistory(ctx, &storage.HistoryEntry{
+		MemoryID:  memoryID,
+		Operation: "schedule_updated",
+		Changes:   changes,
+		Reason:    "schedule updated via UpdateSchedule API",
+	})
+
+	return updated, nil
+}
+
+// CancelSchedule archives a scheduled memory, effectively cancelling the schedule.
+func (k *Keyoku) CancelSchedule(ctx context.Context, memoryID string) error {
+	// Get the memory to verify it exists and is a schedule
+	mem, err := k.store.GetMemory(ctx, memoryID)
+	if err != nil {
+		return fmt.Errorf("schedule not found: %w", err)
+	}
+
+	hasCron := false
+	for _, tag := range mem.Tags {
+		if strings.HasPrefix(tag, "cron:") {
+			hasCron = true
+			break
+		}
+	}
+	if !hasCron {
+		return fmt.Errorf("memory %s is not a scheduled memory (no cron tag)", memoryID)
+	}
+
+	archivedState := storage.StateArchived
+	if _, err := k.store.UpdateMemory(ctx, memoryID, storage.MemoryUpdate{State: &archivedState}); err != nil {
+		return fmt.Errorf("failed to cancel schedule: %w", err)
+	}
+
+	k.store.LogHistory(ctx, &storage.HistoryEntry{
+		MemoryID:  memoryID,
+		Operation: "schedule_cancelled",
+		Changes: map[string]any{
+			"content":  mem.Content,
+			"cron_tag": mem.Tags,
+		},
+		Reason: "schedule cancelled via CancelSchedule API",
+	})
+
+	return nil
 }
 
 // UpdateTags sets the tags on a memory, replacing any existing tags.
@@ -600,6 +834,43 @@ func (k *Keyoku) UpdateTags(ctx context.Context, memoryID string, tags []string)
 		Tags: &tags,
 	})
 	return err
+}
+
+// --- schedule helpers ---
+
+// isScheduleContentMatch checks if two schedule content strings refer to the same task.
+// Uses normalized comparison — case-insensitive and whitespace-trimmed.
+func isScheduleContentMatch(existing, incoming string) bool {
+	a := strings.ToLower(strings.TrimSpace(existing))
+	b := strings.ToLower(strings.TrimSpace(incoming))
+	// Exact match after normalization
+	if a == b {
+		return true
+	}
+	// Substring containment (one is a more detailed version of the other)
+	return strings.Contains(a, b) || strings.Contains(b, a)
+}
+
+// scheduleContentHash generates a SHA-256 hash for schedule content deduplication.
+func scheduleContentHash(content string) string {
+	h := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(h[:])
+}
+
+// encodeEmbeddingBytes converts a float32 slice to bytes for SQLite BLOB storage.
+func encodeEmbeddingBytes(embedding []float32) []byte {
+	if len(embedding) == 0 {
+		return nil
+	}
+	buf := make([]byte, len(embedding)*4)
+	for i, v := range embedding {
+		bits := math.Float32bits(v)
+		buf[i*4+0] = byte(bits)
+		buf[i*4+1] = byte(bits >> 8)
+		buf[i*4+2] = byte(bits >> 16)
+		buf[i*4+3] = byte(bits >> 24)
+	}
+	return buf
 }
 
 // Close closes the Keyoku instance and releases all resources.

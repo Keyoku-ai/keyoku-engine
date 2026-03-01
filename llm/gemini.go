@@ -17,7 +17,7 @@ type GeminiProvider struct {
 
 func NewGeminiProvider(apiKey, model string) (*GeminiProvider, error) {
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = "gemini-3-flash-preview"
 	}
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))

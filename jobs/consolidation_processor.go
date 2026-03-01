@@ -148,6 +148,12 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 			continue
 		}
 
+		// Never consolidate cron-tagged memories — they represent explicit
+		// schedules and must never be merged away or lose their tags.
+		if hasCronTag(mem.Tags) {
+			continue
+		}
+
 		// Decode embedding from blob
 		embedding := decodeEmbeddingBlob(mem.Embedding)
 		if len(embedding) == 0 {
@@ -163,6 +169,11 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 			group := make([]*storage.Memory, 0, len(similar))
 			for _, s := range similar {
 				if s.Memory.State != storage.StateStale || processed[s.Memory.ID] {
+					continue
+				}
+
+				// Never pull cron-tagged memories into consolidation groups
+				if hasCronTag(s.Memory.Tags) {
 					continue
 				}
 

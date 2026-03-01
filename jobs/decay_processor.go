@@ -4,10 +4,23 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/keyoku-ai/keyoku-embedded/engine"
 	"github.com/keyoku-ai/keyoku-embedded/storage"
 )
+
+// hasCronTag returns true if the memory's tags contain any cron:* schedule tag.
+// Cron-tagged memories are exempt from decay — they represent explicit schedules
+// (like writing on a calendar) and must remain active until explicitly cancelled.
+func hasCronTag(tags storage.StringSlice) bool {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "cron:") {
+			return true
+		}
+	}
+	return false
+}
 
 // DecayProcessor evaluates memories and transitions states based on the Ebbinghaus decay curve.
 type DecayProcessor struct {
@@ -74,6 +87,12 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 
 		for _, mem := range memories {
 			totalProcessed++
+
+			// Cron-tagged memories never decay. They represent explicit schedules
+			// and must stay active until explicitly cancelled or archived.
+			if hasCronTag(mem.Tags) {
+				continue
+			}
 
 			decayFactor := engine.CalculateDecayFactor(mem.LastAccessedAt, mem.Stability)
 			targetState := engine.DetermineDecayState(decayFactor)

@@ -537,9 +537,15 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 	}
 
 	newContent := update.NewContent
-	_, err := e.store.UpdateMemory(ctx, targetMemory.ID, storage.MemoryUpdate{
+	updatePayload := storage.MemoryUpdate{
 		Content: &newContent,
-	})
+	}
+	// Pass tags through to storage if the LLM provided them (e.g., schedule changes)
+	if len(update.Tags) > 0 {
+		tags := update.Tags
+		updatePayload.Tags = &tags
+	}
+	_, err := e.store.UpdateMemory(ctx, targetMemory.ID, updatePayload)
 	if err != nil {
 		return MemoryDetail{}, err
 	}
