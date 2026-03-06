@@ -15,11 +15,15 @@ type AnthropicProvider struct {
 	model  string
 }
 
-func NewAnthropicProvider(apiKey, model string) (*AnthropicProvider, error) {
+func NewAnthropicProvider(apiKey, model, baseURL string) (*AnthropicProvider, error) {
 	if model == "" {
 		model = "claude-3-5-haiku-latest"
 	}
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	client := anthropic.NewClient(opts...)
 	return &AnthropicProvider{client: &client, model: model}, nil
 }
 

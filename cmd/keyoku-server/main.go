@@ -22,6 +22,13 @@ func main() {
 	dbPath := flag.String("db", "", "override database path")
 	flag.Parse()
 
+	// Sentai session token check — binary only works when launched by sentai
+	if os.Getenv("SENTAI_SESSION_TOKEN") == "" {
+		log.Fatal("keyoku-server requires SENTAI_SESSION_TOKEN to be set.\n" +
+			"This binary is designed to be launched by the Sentai orchestrator.\n" +
+			"Run `sentai run` to start the full stack.")
+	}
+
 	// Load config
 	cfg, err := LoadServerConfig(*configPath)
 	if err != nil {

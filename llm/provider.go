@@ -26,6 +26,7 @@ type ProviderConfig struct {
 	Provider string
 	APIKey   string
 	Model    string
+	BaseURL  string // Optional: custom base URL (for OpenRouter, LiteLLM, etc.)
 }
 
 // NewProvider creates a new LLM provider based on configuration.
@@ -35,12 +36,12 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	}
 
 	switch cfg.Provider {
-	case "google":
+	case "google", "gemini":
 		return NewGeminiProvider(cfg.APIKey, cfg.Model)
 	case "openai":
-		return NewOpenAIProvider(cfg.APIKey, cfg.Model)
+		return NewOpenAIProvider(cfg.APIKey, cfg.Model, cfg.BaseURL)
 	case "anthropic":
-		return NewAnthropicProvider(cfg.APIKey, cfg.Model)
+		return NewAnthropicProvider(cfg.APIKey, cfg.Model, cfg.BaseURL)
 	default:
 		return nil, fmt.Errorf("unknown provider: %s (valid: google, openai, anthropic)", cfg.Provider)
 	}

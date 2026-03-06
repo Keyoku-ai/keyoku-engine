@@ -11,23 +11,34 @@ import (
 
 // OpenAIEmbedder implements Embedder using the OpenAI embeddings API.
 type OpenAIEmbedder struct {
-	apiKey string
-	model  string
-	dims   int
-	client *http.Client
+	apiKey  string
+	model   string
+	dims    int
+	baseURL string
+	client  *http.Client
 }
 
 // NewOpenAI creates an OpenAI embedder.
 func NewOpenAI(apiKey, model string) *OpenAIEmbedder {
+	return NewOpenAIWithBaseURL(apiKey, model, "")
+}
+
+// NewOpenAIWithBaseURL creates an OpenAI embedder with an optional custom base URL.
+// Use this to point at OpenRouter, LiteLLM, or other OpenAI-compatible APIs.
+func NewOpenAIWithBaseURL(apiKey, model, baseURL string) *OpenAIEmbedder {
 	dims := 1536 // text-embedding-3-small default
 	if model == "text-embedding-3-large" {
 		dims = 3072
 	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com"
+	}
 	return &OpenAIEmbedder{
-		apiKey: apiKey,
-		model:  model,
-		dims:   dims,
-		client: &http.Client{},
+		apiKey:  apiKey,
+		model:   model,
+		dims:    dims,
+		baseURL: baseURL,
+		client:  &http.Client{},
 	}
 }
 
@@ -76,7 +87,7 @@ func (e *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", e.baseURL+"/v1/embeddings", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

@@ -16,11 +16,15 @@ type OpenAIProvider struct {
 	model  string
 }
 
-func NewOpenAIProvider(apiKey, model string) (*OpenAIProvider, error) {
+func NewOpenAIProvider(apiKey, model, baseURL string) (*OpenAIProvider, error) {
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
-	client := openai.NewClient(option.WithAPIKey(apiKey))
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	client := openai.NewClient(opts...)
 	return &OpenAIProvider{client: &client, model: model}, nil
 }
 

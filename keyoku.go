@@ -94,24 +94,32 @@ func New(cfg Config) (*Keyoku, error) {
 
 	// Create LLM provider
 	apiKey := cfg.OpenAIAPIKey
+	baseURL := cfg.OpenAIBaseURL
 	switch cfg.ExtractionProvider {
-	case "google":
+	case "google", "gemini":
 		apiKey = cfg.GeminiAPIKey
+		baseURL = "" // Gemini SDK doesn't support custom base URLs
 	case "anthropic":
 		apiKey = cfg.AnthropicAPIKey
+		baseURL = cfg.AnthropicBaseURL
 	}
 
 	provider, err := llm.NewProvider(llm.ProviderConfig{
 		Provider: cfg.ExtractionProvider,
 		APIKey:   apiKey,
 		Model:    cfg.ExtractionModel,
+		BaseURL:  baseURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
 
-	// Create embedder
-	emb := embedder.NewOpenAI(cfg.OpenAIAPIKey, cfg.EmbeddingModel)
+	// Create embedder (supports custom base URL for OpenRouter/LiteLLM)
+	embBaseURL := cfg.EmbeddingBaseURL
+	if embBaseURL == "" {
+		embBaseURL = cfg.OpenAIBaseURL // Fall back to OpenAI base URL
+	}
+	emb := embedder.NewOpenAIWithBaseURL(cfg.OpenAIAPIKey, cfg.EmbeddingModel, embBaseURL)
 
 	// Create storage (SQLite + HNSW vector index)
 	store, err := storage.NewSQLite(cfg.DBPath, emb.Dimensions())

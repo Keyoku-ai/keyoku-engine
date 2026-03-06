@@ -17,6 +17,11 @@ type Config struct {
 	OpenAIAPIKey    string
 	AnthropicAPIKey string
 
+	// Base URLs (optional — for OpenRouter, LiteLLM, or custom endpoints)
+	OpenAIBaseURL    string // e.g., "https://openrouter.ai/api" or "http://localhost:4000"
+	AnthropicBaseURL string // e.g., "https://openrouter.ai/api"
+	EmbeddingBaseURL string // e.g., custom embedding endpoint (defaults to OpenAI)
+
 	// Embeddings
 	EmbeddingModel string // default: "text-embedding-3-small"
 
