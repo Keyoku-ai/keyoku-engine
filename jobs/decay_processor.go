@@ -23,6 +23,7 @@ func hasCronTag(tags storage.StringSlice) bool {
 }
 
 // DecayProcessor evaluates memories and transitions states based on the Ebbinghaus decay curve.
+// Enhanced to use access-frequency-aware decay and importance boosting.
 type DecayProcessor struct {
 	store  storage.Store
 	logger *slog.Logger
@@ -71,7 +72,7 @@ func (p *DecayProcessor) Type() JobType { return JobTypeDecay }
 func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 	p.logger.Info("starting decay processing")
 
-	var totalProcessed, totalAffected, transitionsToStale, transitionsToArchive int
+	var totalProcessed, totalAffected, transitionsToStale, transitionsToArchive, importanceBoosted int
 	offset := 0
 
 	for {
@@ -94,18 +95,35 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 				continue
 			}
 
-			decayFactor := engine.CalculateDecayFactor(mem.LastAccessedAt, mem.Stability)
+			// Use access-aware decay: frequently accessed memories resist decay.
+			decayFactor := engine.CalculateDecayFactorWithAccess(mem.LastAccessedAt, mem.Stability, mem.AccessCount)
 			targetState := engine.DetermineDecayState(decayFactor)
 			newState := storage.MemoryState(targetState)
+
+			// Access-burst importance boost: if a memory is being hammered by
+			// the AI, it's clearly important — boost its importance score.
+			boost := engine.CalculateAccessBurstImportanceBoost(mem.AccessCount, mem.LastAccessedAt)
+			if boost > 0 && mem.Importance < 1.0 {
+				newImportance := mem.Importance + boost
+				if newImportance > 1.0 {
+					newImportance = 1.0
+				}
+				_, err := p.store.UpdateMemory(ctx, mem.ID, storage.MemoryUpdate{
+					Importance: &newImportance,
+				})
+				if err == nil {
+					importanceBoosted++
+				}
+			}
 
 			if mem.State != newState {
 				var reason string
 				switch newState {
 				case storage.StateStale:
-					reason = fmt.Sprintf("decay factor %.3f below stale threshold %.3f", decayFactor, p.config.ThresholdStale)
+					reason = fmt.Sprintf("decay factor %.3f below stale threshold %.3f (access_count=%d)", decayFactor, p.config.ThresholdStale, mem.AccessCount)
 					transitionsToStale++
 				case storage.StateArchived:
-					reason = fmt.Sprintf("decay factor %.3f below archive threshold %.3f", decayFactor, p.config.ThresholdArchive)
+					reason = fmt.Sprintf("decay factor %.3f below archive threshold %.3f (access_count=%d)", decayFactor, p.config.ThresholdArchive, mem.AccessCount)
 					transitionsToArchive++
 				}
 
@@ -137,6 +155,7 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 		"affected", totalAffected,
 		"to_stale", transitionsToStale,
 		"to_archive", transitionsToArchive,
+		"importance_boosted", importanceBoosted,
 	)
 
 	return &JobResult{
@@ -145,6 +164,7 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 		Details: map[string]any{
 			"transitions_to_stale":   transitionsToStale,
 			"transitions_to_archive": transitionsToArchive,
+			"importance_boosted":     importanceBoosted,
 		},
 	}, nil
 }

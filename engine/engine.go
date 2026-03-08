@@ -686,6 +686,7 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 			Stability:      c.Memory.Stability,
 			Importance:     c.Memory.Importance,
 			Confidence:     c.Memory.Confidence,
+			AccessCount:    c.Memory.AccessCount,
 		})
 		results = append(results, &QueryResult{
 			Memory: c.Memory,
@@ -709,7 +710,7 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 
 	// Spaced repetition: increase stability for accessed memories
 	for _, r := range results {
-		newStability := CalculateNewStability(r.Memory.Stability, r.Memory.LastAccessedAt)
+		newStability := CalculateNewStabilityWithAccess(r.Memory.Stability, r.Memory.LastAccessedAt, r.Memory.AccessCount)
 		if newStability > r.Memory.Stability {
 			e.store.UpdateStability(ctx, r.Memory.ID, newStability)
 		}

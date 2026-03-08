@@ -28,17 +28,24 @@ type ConsolidationJobConfig struct {
 	MaxMergeSize                int
 	RespectAgentBoundaries      bool
 	RespectVisibilityBoundaries bool
+	// ProactiveConsolidation enables merging active memories too (not just stale).
+	// Uses a higher similarity threshold to only merge truly redundant active memories,
+	// strengthening important memories before they have a chance to decay.
+	ProactiveConsolidation          bool
+	ProactiveSimilarityThreshold    float64 // Higher threshold for active memories (default: 0.92)
 }
 
 // DefaultConsolidationJobConfig returns default consolidation configuration.
 func DefaultConsolidationJobConfig() ConsolidationJobConfig {
 	return ConsolidationJobConfig{
-		SimilarityThreshold:         0.85,
-		MinGroupSize:                2,
-		BatchSize:                   500,
-		MaxMergeSize:                5,
-		RespectAgentBoundaries:      true,
-		RespectVisibilityBoundaries: true,
+		SimilarityThreshold:          0.85,
+		MinGroupSize:                 2,
+		BatchSize:                    500,
+		MaxMergeSize:                 5,
+		RespectAgentBoundaries:       true,
+		RespectVisibilityBoundaries:  true,
+		ProactiveConsolidation:       true,
+		ProactiveSimilarityThreshold: 0.92,
 	}
 }
 
@@ -79,19 +86,19 @@ func (p *ConsolidationProcessor) Process(ctx context.Context) (*JobResult, error
 	}
 
 	var totalProcessed, totalConsolidated, groupsFound int
+	var proactiveConsolidated int
 
 	for _, entityID := range entities {
-		groups, err := p.findSimilarGroups(ctx, entityID)
+		// Pass 1: Consolidate stale memories (existing behavior)
+		groups, err := p.findSimilarGroups(ctx, entityID, storage.StateStale, p.config.SimilarityThreshold)
 		if err != nil {
-			p.logger.Error("failed to find similar groups", "entity", entityID, "error", err)
+			p.logger.Error("failed to find similar stale groups", "entity", entityID, "error", err)
 			continue
 		}
 
 		groupsFound += len(groups)
-
 		for _, group := range groups {
 			totalProcessed += len(group)
-
 			consolidated, err := p.consolidateGroup(ctx, group)
 			if err != nil {
 				p.logger.Error("failed to consolidate group", "entity", entityID, "error", err)
@@ -101,6 +108,31 @@ func (p *ConsolidationProcessor) Process(ctx context.Context) (*JobResult, error
 				totalConsolidated++
 			}
 		}
+
+		// Pass 2: Proactive consolidation of active memories
+		// Uses higher similarity threshold — only merge truly redundant active memories.
+		// This strengthens important memories and reduces noise before decay kicks in.
+		if p.config.ProactiveConsolidation {
+			activeGroups, err := p.findSimilarGroups(ctx, entityID, storage.StateActive, p.config.ProactiveSimilarityThreshold)
+			if err != nil {
+				p.logger.Error("failed to find similar active groups", "entity", entityID, "error", err)
+				continue
+			}
+
+			groupsFound += len(activeGroups)
+			for _, group := range activeGroups {
+				totalProcessed += len(group)
+				consolidated, err := p.consolidateGroup(ctx, group)
+				if err != nil {
+					p.logger.Error("failed to consolidate active group", "entity", entityID, "error", err)
+					continue
+				}
+				if consolidated {
+					proactiveConsolidated++
+					totalConsolidated++
+				}
+			}
+		}
 	}
 
 	p.logger.Info("consolidation complete",
@@ -108,22 +140,24 @@ func (p *ConsolidationProcessor) Process(ctx context.Context) (*JobResult, error
 		"groups_found", groupsFound,
 		"memories_processed", totalProcessed,
 		"consolidations", totalConsolidated,
+		"proactive_consolidations", proactiveConsolidated,
 	)
 
 	return &JobResult{
 		ItemsProcessed: totalProcessed,
 		ItemsAffected:  totalConsolidated,
 		Details: map[string]any{
-			"entities_processed": len(entities),
-			"groups_found":       groupsFound,
+			"entities_processed":       len(entities),
+			"groups_found":             groupsFound,
+			"proactive_consolidations": proactiveConsolidated,
 		},
 	}, nil
 }
 
-func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID string) ([][]*storage.Memory, error) {
+func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID string, targetState storage.MemoryState, similarityThreshold float64) ([][]*storage.Memory, error) {
 	query := storage.MemoryQuery{
 		EntityID:   entityID,
-		States:     []storage.MemoryState{storage.StateStale},
+		States:     []storage.MemoryState{targetState},
 		Limit:      p.config.BatchSize,
 		OrderBy:    "importance",
 		Descending: true,
@@ -140,9 +174,6 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 	groups := make([][]*storage.Memory, 0)
 	processed := make(map[string]bool)
 
-	// For embedded, we don't have float32 embeddings directly on Memory —
-	// they're stored as byte blobs. We'd need to decode them to use FindSimilar.
-	// For now, use the store's FindSimilar which handles the HNSW lookup.
 	for _, mem := range memories {
 		if processed[mem.ID] || len(mem.Embedding) == 0 {
 			continue
@@ -160,7 +191,7 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 			continue
 		}
 
-		similar, err := p.store.FindSimilar(ctx, embedding, entityID, p.config.MaxMergeSize, p.config.SimilarityThreshold)
+		similar, err := p.store.FindSimilar(ctx, embedding, entityID, p.config.MaxMergeSize, similarityThreshold)
 		if err != nil {
 			continue
 		}
@@ -168,7 +199,7 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 		if len(similar) >= p.config.MinGroupSize {
 			group := make([]*storage.Memory, 0, len(similar))
 			for _, s := range similar {
-				if s.Memory.State != storage.StateStale || processed[s.Memory.ID] {
+				if s.Memory.State != targetState || processed[s.Memory.ID] {
 					continue
 				}
 
@@ -184,11 +215,9 @@ func (p *ConsolidationProcessor) findSimilarGroups(ctx context.Context, entityID
 
 				// Enforce visibility boundaries: don't cross-contaminate visibility levels
 				if p.config.RespectVisibilityBoundaries {
-					// Private: only consolidate with same agent's private memories
 					if mem.Visibility == storage.VisibilityPrivate && s.Memory.AgentID != mem.AgentID {
 						continue
 					}
-					// Team: only consolidate with same team's team-visible memories
 					if mem.Visibility == storage.VisibilityTeam && s.Memory.TeamID != mem.TeamID {
 						continue
 					}

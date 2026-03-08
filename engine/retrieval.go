@@ -325,7 +325,7 @@ func (r *EnhancedRetriever) calculateScores(memories []*ScoredMemory) {
 	recencyWindow := time.Duration(r.config.RecencyBoostWindow) * time.Hour
 
 	for _, m := range memories {
-		m.DecayFactor = CalculateDecayFactor(m.Memory.LastAccessedAt, m.Memory.Stability)
+		m.DecayFactor = CalculateDecayFactorWithAccess(m.Memory.LastAccessedAt, m.Memory.Stability, m.Memory.AccessCount)
 
 		var recency float64
 		if m.Memory.LastAccessedAt != nil {

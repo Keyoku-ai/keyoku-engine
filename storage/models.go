@@ -88,26 +88,42 @@ const (
 )
 
 // StabilityDays returns the default stability (in days) for a memory type.
+//
+// Tuned for AI agents that access memory far more frequently than humans.
+// AI agents perform semantic search on nearly every interaction, so memories
+// need higher base stability to avoid premature decay. The access-frequency
+// modifier in the decay engine further extends effective stability for
+// frequently retrieved memories.
+//
+// Design rationale:
+//   - IDENTITY (365d): Who am I? Core identity rarely changes.
+//   - PREFERENCE (270d): Preferences evolve slowly, ~9 months is right.
+//   - RELATIONSHIP (270d): Relationships are long-term context.
+//   - EVENT (120d): Important events stay relevant for months.
+//   - ACTIVITY (90d): What was I doing? 3 months of behavioral history.
+//   - PLAN (60d): Plans span weeks to months in agent workflows.
+//   - CONTEXT (21d): Conversation context stays relevant across sessions.
+//   - EPHEMERAL (3d): Truly transient, but 1 day was too aggressive.
 func (t MemoryType) StabilityDays() float64 {
 	switch t {
 	case TypeIdentity:
 		return 365
 	case TypePreference:
-		return 180
+		return 270
 	case TypeRelationship:
-		return 180
+		return 270
 	case TypeEvent:
-		return 60
+		return 120
 	case TypeActivity:
-		return 45
+		return 90
 	case TypePlan:
-		return 30
-	case TypeContext:
-		return 7
-	case TypeEphemeral:
-		return 1
-	default:
 		return 60
+	case TypeContext:
+		return 21
+	case TypeEphemeral:
+		return 3
+	default:
+		return 90
 	}
 }
 

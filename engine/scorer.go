@@ -51,6 +51,7 @@ type ScoringInput struct {
 	Stability      float64
 	Importance     float64
 	Confidence     float64
+	AccessCount    int
 }
 
 type ScoringResult struct {
@@ -65,7 +66,7 @@ type ScoringResult struct {
 func (s *Scorer) Score(input ScoringInput) ScoringResult {
 	semanticScore := input.Similarity
 	recencyScore := s.calculateRecencyScore(input.CreatedAt, input.LastAccessedAt)
-	decayScore := CalculateDecayFactor(input.LastAccessedAt, input.Stability)
+	decayScore := CalculateDecayFactorWithAccess(input.LastAccessedAt, input.Stability, input.AccessCount)
 	importanceScore := input.Importance
 	confidenceScore := input.Confidence
 
