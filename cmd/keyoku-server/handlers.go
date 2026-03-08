@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -427,13 +428,9 @@ func (h *Handlers) HandleGetMemory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMemoryJSON(memory))
 }
 
-// HandleListMemories lists memories for an entity.
+// HandleListMemories lists memories for an entity (or all entities if entity_id is omitted).
 func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 	entityID := r.URL.Query().Get("entity_id")
-	if entityID == "" {
-		writeError(w, http.StatusBadRequest, "entity_id query parameter is required")
-		return
-	}
 
 	limit := 100
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -442,13 +439,49 @@ func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	memories, err := h.k.List(r.Context(), entityID, limit)
+	if entityID != "" {
+		// Single entity listing
+		memories, err := h.k.List(r.Context(), entityID, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
+		return
+	}
+
+	// No entity_id — list across all entities
+	entities, err := h.k.ListEntities(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var allMemories []memoryJSON
+	for _, eid := range entities {
+		memories, err := h.k.List(r.Context(), eid, limit)
+		if err != nil {
+			continue
+		}
+		allMemories = append(allMemories, toMemoryJSONSlice(memories)...)
+	}
+	// Sort by created_at descending, then cap to limit
+	sort.Slice(allMemories, func(i, j int) bool {
+		return allMemories[i].CreatedAt.After(allMemories[j].CreatedAt)
+	})
+	if len(allMemories) > limit {
+		allMemories = allMemories[:limit]
+	}
+	writeJSON(w, http.StatusOK, allMemories)
+}
 
-	writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
+// HandleListEntities returns all known entity IDs.
+func (h *Handlers) HandleListEntities(w http.ResponseWriter, r *http.Request) {
+	entities, err := h.k.ListEntities(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, entities)
 }
 
 // HandleDeleteMemory deletes a single memory by ID.

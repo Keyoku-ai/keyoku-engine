@@ -78,6 +78,9 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/memories/", handlers.HandleDeleteMemory)
 	mux.HandleFunc("DELETE /api/v1/memories", handlers.HandleDeleteAllMemories)
 
+	// Entities
+	mux.HandleFunc("GET /api/v1/entities", handlers.HandleListEntities)
+
 	// Stats
 	mux.HandleFunc("GET /api/v1/stats/", handlers.HandleStats)
 

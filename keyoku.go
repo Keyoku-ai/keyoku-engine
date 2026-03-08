@@ -388,6 +388,11 @@ func (k *Keyoku) DeleteAll(ctx context.Context, entityID string) error {
 	return k.engine.DeleteAll(ctx, entityID)
 }
 
+// ListEntities returns all known entity IDs with stored memories.
+func (k *Keyoku) ListEntities(ctx context.Context) ([]string, error) {
+	return k.store.GetAllEntities(ctx)
+}
+
 // Stats returns statistics about stored memories.
 func (k *Keyoku) Stats(ctx context.Context, entityID string) (*Stats, error) {
 	return k.engine.GetStats(ctx, entityID)
