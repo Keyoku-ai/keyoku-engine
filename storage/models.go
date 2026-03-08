@@ -217,6 +217,7 @@ type MemoryQuery struct {
 	Offset     int
 	OrderBy    string
 	Descending bool
+	Cursor     string // Memory ID for keyset/cursor pagination (used instead of Offset when set)
 }
 
 // MemoryUpdate represents fields to update on a memory.

@@ -61,14 +61,14 @@ type Scheduler struct {
 // DefaultSchedules returns the default job schedules.
 //
 // Tuned for AI agent workloads:
-//   - Decay every 30 min (was 1h) — catch stale memories faster
-//   - Consolidation every 6h (was 24h) — proactive merging of redundant memories
+//   - Decay every 30 min — catch stale memories faster
+//   - Consolidation every 1h — safety net; lifecycle triggers handle the critical path
 //   - Archival every 24h — unchanged
 //   - Purge every 24h — unchanged
 func DefaultSchedules() []JobSchedule {
 	return []JobSchedule{
 		{JobType: JobTypeDecay, Interval: 30 * time.Minute, Enabled: true},
-		{JobType: JobTypeConsolidation, Interval: 6 * time.Hour, Enabled: true},
+		{JobType: JobTypeConsolidation, Interval: 1 * time.Hour, Enabled: true},
 		{JobType: JobTypeArchival, Interval: 24 * time.Hour, Enabled: true},
 		{JobType: JobTypePurge, Interval: 24 * time.Hour, Enabled: true},
 	}

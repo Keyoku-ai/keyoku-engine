@@ -108,6 +108,10 @@ type Store interface {
 	GetTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error)
 	GetTeamForAgent(ctx context.Context, agentID string) (string, error) // returns team_id or ""
 
+	// Aggregation & Sampling (for reporting at scale)
+	AggregateStats(ctx context.Context, entityID string) (*AggregatedStats, error)
+	SampleMemories(ctx context.Context, entityID string, limit int) ([]*Memory, error)
+
 	// Maintenance
 	Close() error
 	Ping(ctx context.Context) error

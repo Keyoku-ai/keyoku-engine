@@ -801,6 +801,16 @@ func (e *Engine) GetStats(ctx context.Context, entityID string) (*Stats, error) 
 	return stats, nil
 }
 
+// GetGlobalStats returns SQL-aggregated stats. Empty entityID = global.
+func (e *Engine) GetGlobalStats(ctx context.Context, entityID string) (*storage.AggregatedStats, error) {
+	return e.store.AggregateStats(ctx, entityID)
+}
+
+// GetSampleMemories returns a representative sample using server-side SQL.
+func (e *Engine) GetSampleMemories(ctx context.Context, entityID string, limit int) ([]*storage.Memory, error) {
+	return e.store.SampleMemories(ctx, entityID, limit)
+}
+
 // Close closes the engine and releases resources.
 func (e *Engine) Close() error {
 	if closer, ok := e.provider.(interface{ Close() error }); ok {

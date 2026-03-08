@@ -82,7 +82,11 @@ func main() {
 	mux.HandleFunc("GET /api/v1/entities", handlers.HandleListEntities)
 
 	// Stats
-	mux.HandleFunc("GET /api/v1/stats/", handlers.HandleStats)
+	mux.HandleFunc("GET /api/v1/stats", handlers.HandleGlobalStats) // global (no trailing slash)
+	mux.HandleFunc("GET /api/v1/stats/", handlers.HandleStats)      // per-entity
+
+	// Sampling (server-side representative sample)
+	mux.HandleFunc("GET /api/v1/memories/sample", handlers.HandleSampleMemories)
 
 	// Heartbeat
 	mux.HandleFunc("POST /api/v1/heartbeat/check", handlers.HandleHeartbeatCheck)
@@ -92,6 +96,9 @@ func main() {
 	mux.HandleFunc("POST /api/v1/watcher/stop", handlers.HandleWatcherStop)
 	mux.HandleFunc("POST /api/v1/watcher/watch", handlers.HandleWatcherWatch)
 	mux.HandleFunc("POST /api/v1/watcher/unwatch", handlers.HandleWatcherUnwatch)
+
+	// Consolidation (lifecycle-triggered)
+	mux.HandleFunc("POST /api/v1/consolidate", handlers.HandleConsolidate)
 
 	// Schedule
 	mux.HandleFunc("POST /api/v1/schedule", handlers.HandleCreateSchedule)

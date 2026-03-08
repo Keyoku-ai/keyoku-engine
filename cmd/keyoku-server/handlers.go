@@ -266,6 +266,16 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// HandleConsolidate triggers immediate memory consolidation for a given entity.
+// Used for lifecycle-aware consolidation (e.g., after agent completion).
+func (h *Handlers) HandleConsolidate(w http.ResponseWriter, r *http.Request) {
+	if err := h.k.RunConsolidation(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "consolidation failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // HandleHeartbeatCheck performs a zero-token heartbeat check.
 func (h *Handlers) HandleHeartbeatCheck(w http.ResponseWriter, r *http.Request) {
 	var req heartbeatCheckRequest
@@ -552,6 +562,38 @@ func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
 		ByType:         byType,
 		ByState:        byState,
 	})
+}
+
+// HandleGlobalStats returns SQL-aggregated stats. No entity_id = global.
+func (h *Handlers) HandleGlobalStats(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity_id") // optional
+
+	stats, err := h.k.GlobalStats(r.Context(), entityID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// HandleSampleMemories returns a representative sample of memories using server-side SQL.
+func (h *Handlers) HandleSampleMemories(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity_id") // optional
+	limit := 150
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	memories, err := h.k.SampleMemories(r.Context(), entityID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
 }
 
 // --- Schedule Handlers ---

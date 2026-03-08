@@ -24,8 +24,8 @@ type DuplicateConfig struct {
 
 func DefaultDuplicateConfig() DuplicateConfig {
 	return DuplicateConfig{
-		SemanticThreshold:      0.95,
-		NearDuplicateThreshold: 0.85,
+		SemanticThreshold:      0.90, // tighter: catch more semantic duplicates
+		NearDuplicateThreshold: 0.80, // tighter: merge more near-duplicates
 		MaxCandidates:          10,
 		EnableSemanticDedup:    true,
 	}

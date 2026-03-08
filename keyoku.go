@@ -398,6 +398,16 @@ func (k *Keyoku) Stats(ctx context.Context, entityID string) (*Stats, error) {
 	return k.engine.GetStats(ctx, entityID)
 }
 
+// GlobalStats returns SQL-aggregated stats. Empty entityID = global across all entities.
+func (k *Keyoku) GlobalStats(ctx context.Context, entityID string) (*storage.AggregatedStats, error) {
+	return k.engine.GetGlobalStats(ctx, entityID)
+}
+
+// SampleMemories returns a representative sample of memories using server-side SQL.
+func (k *Keyoku) SampleMemories(ctx context.Context, entityID string, limit int) ([]*Memory, error) {
+	return k.engine.GetSampleMemories(ctx, entityID, limit)
+}
+
 // TokenUsage returns token usage statistics for an entity.
 func (k *Keyoku) TokenUsage(entityID string) engine.TokenUsageStats {
 	return k.engine.TokenBudget().GetUsage(entityID)
@@ -884,6 +894,15 @@ func encodeEmbeddingBytes(embedding []float32) []byte {
 		buf[i*4+3] = byte(bits >> 24)
 	}
 	return buf
+}
+
+// RunConsolidation triggers immediate memory consolidation via the scheduler.
+// Used for lifecycle-aware consolidation (e.g., after agent completion).
+func (k *Keyoku) RunConsolidation(ctx context.Context) error {
+	if k.scheduler == nil {
+		return nil // scheduler disabled, no-op
+	}
+	return k.scheduler.RunNow(ctx, jobs.JobTypeConsolidation)
 }
 
 // Close closes the Keyoku instance and releases all resources.

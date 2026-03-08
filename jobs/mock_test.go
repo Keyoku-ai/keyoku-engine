@@ -267,6 +267,8 @@ func (m *mockStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.A
 func (m *mockStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error { return nil }
 func (m *mockStore) GetAgentStateHistory(_ context.Context, _ string, _ int) ([]*storage.AgentStateHistory, error) { return nil, nil }
 func (m *mockStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStateHistory) error { return nil }
+func (m *mockStore) AggregateStats(_ context.Context, _ string) (*storage.AggregatedStats, error) { return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil }
+func (m *mockStore) SampleMemories(_ context.Context, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) Close() error {
 	if m.closeFn != nil { return m.closeFn() }; return nil
 }
