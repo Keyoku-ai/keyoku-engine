@@ -726,6 +726,7 @@ func (e *Engine) GetAll(ctx context.Context, entityID string, limit int) ([]*sto
 	}
 	return e.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
+		States:     []storage.MemoryState{storage.StateActive, storage.StateStale},
 		Limit:      limit,
 		OrderBy:    "created_at",
 		Descending: true,
