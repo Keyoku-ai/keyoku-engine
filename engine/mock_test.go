@@ -77,6 +77,11 @@ type mockStore struct {
 	getHNSWIndexSizeFn               func() int
 	getLowestRankedInHNSWFn          func(int) ([]*storage.Memory, error)
 	removeFromHNSWFn                 func(string) error
+	createAgentStateFn               func(context.Context, *storage.AgentState) error
+	getAgentStateFn                  func(context.Context, string, string, string) (*storage.AgentState, error)
+	updateAgentStateFn               func(context.Context, string, map[string]any) error
+	getAgentStateHistoryFn           func(context.Context, string, int) ([]*storage.AgentStateHistory, error)
+	logAgentStateHistoryFn           func(context.Context, *storage.AgentStateHistory) error
 	closeFn                          func() error
 	pingFn                           func(context.Context) error
 }
@@ -464,17 +469,34 @@ func (m *mockStore) AddTeamMember(_ context.Context, _, _ string) error { return
 func (m *mockStore) RemoveTeamMember(_ context.Context, _, _ string) error { return nil }
 func (m *mockStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) { return nil, nil }
 func (m *mockStore) GetTeamForAgent(_ context.Context, _ string) (string, error) { return "", nil }
-func (m *mockStore) CreateAgentState(_ context.Context, _ *storage.AgentState) error { return nil }
-func (m *mockStore) GetAgentState(_ context.Context, _, _, _ string) (*storage.AgentState, error) {
-	return nil, nil
-}
-func (m *mockStore) UpdateAgentState(_ context.Context, _ string, _ map[string]any) error {
+func (m *mockStore) CreateAgentState(ctx context.Context, state *storage.AgentState) error {
+	if m.createAgentStateFn != nil {
+		return m.createAgentStateFn(ctx, state)
+	}
 	return nil
 }
-func (m *mockStore) GetAgentStateHistory(_ context.Context, _ string, _ int) ([]*storage.AgentStateHistory, error) {
+func (m *mockStore) GetAgentState(ctx context.Context, entityID, agentID, schemaName string) (*storage.AgentState, error) {
+	if m.getAgentStateFn != nil {
+		return m.getAgentStateFn(ctx, entityID, agentID, schemaName)
+	}
 	return nil, nil
 }
-func (m *mockStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStateHistory) error {
+func (m *mockStore) UpdateAgentState(ctx context.Context, id string, newState map[string]any) error {
+	if m.updateAgentStateFn != nil {
+		return m.updateAgentStateFn(ctx, id, newState)
+	}
+	return nil
+}
+func (m *mockStore) GetAgentStateHistory(ctx context.Context, stateID string, limit int) ([]*storage.AgentStateHistory, error) {
+	if m.getAgentStateHistoryFn != nil {
+		return m.getAgentStateHistoryFn(ctx, stateID, limit)
+	}
+	return nil, nil
+}
+func (m *mockStore) LogAgentStateHistory(ctx context.Context, history *storage.AgentStateHistory) error {
+	if m.logAgentStateHistoryFn != nil {
+		return m.logAgentStateHistoryFn(ctx, history)
+	}
 	return nil
 }
 func (m *mockStore) AggregateStats(_ context.Context, _ string) (*storage.AggregatedStats, error) { return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil }
@@ -512,6 +534,7 @@ type mockProvider struct {
 	consolidateMemoriesFn func(context.Context, llm.ConsolidationRequest) (*llm.ConsolidationResponse, error)
 	extractWithSchemaFn   func(context.Context, llm.CustomExtractionRequest) (*llm.CustomExtractionResponse, error)
 	extractStateFn        func(context.Context, llm.StateExtractionRequest) (*llm.StateExtractionResponse, error)
+	detectConflictFn      func(context.Context, llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error)
 	name                  string
 	model                 string
 }
@@ -540,7 +563,10 @@ func (m *mockProvider) ExtractState(ctx context.Context, req llm.StateExtraction
 	}
 	return &llm.StateExtractionResponse{}, nil
 }
-func (m *mockProvider) DetectConflict(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+func (m *mockProvider) DetectConflict(ctx context.Context, req llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+	if m.detectConflictFn != nil {
+		return m.detectConflictFn(ctx, req)
+	}
 	return &llm.ConflictCheckResponse{}, nil
 }
 func (m *mockProvider) ReEvaluateImportance(_ context.Context, _ llm.ImportanceReEvalRequest) (*llm.ImportanceReEvalResponse, error) {
@@ -548,6 +574,9 @@ func (m *mockProvider) ReEvaluateImportance(_ context.Context, _ llm.ImportanceR
 }
 func (m *mockProvider) PrioritizeActions(_ context.Context, _ llm.ActionPriorityRequest) (*llm.ActionPriorityResponse, error) {
 	return &llm.ActionPriorityResponse{}, nil
+}
+func (m *mockProvider) AnalyzeHeartbeatContext(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+	return &llm.HeartbeatAnalysisResponse{}, nil
 }
 func (m *mockProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
 	return &llm.GraphSummaryResponse{}, nil

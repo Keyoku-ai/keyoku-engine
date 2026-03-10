@@ -5,8 +5,10 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
@@ -311,6 +313,162 @@ func TestContainsAny(t *testing.T) {
 	}
 	if containsAny("hello world", []string{"foo", "bar"}) {
 		t.Error("expected false")
+	}
+}
+
+func TestDetectConflicts_LLMEscalation_Contradiction(t *testing.T) {
+	// Content that patterns won't catch but LLM should
+	existing := testMemory("mem-1", "User is allergic to shellfish")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.75}}, nil
+		},
+	}
+	provider := &mockProvider{
+		detectConflictFn: func(_ context.Context, req llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+			return &llm.ConflictCheckResponse{
+				Contradicts:  true,
+				ConflictType: "contradiction",
+				Confidence:   0.85,
+				Explanation:  "allergic to shellfish contradicts enjoying shrimp",
+				Resolution:   "use_new",
+			}, nil
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = true
+	d := NewConflictDetector(store, provider, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User enjoys eating shrimp", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !result.HasConflict {
+		t.Error("expected LLM to detect contradiction")
+	}
+	if len(result.Conflicts) > 0 && result.Conflicts[0].ConflictType != ConflictTypeContradiction {
+		t.Errorf("expected contradiction type, got %q", result.Conflicts[0].ConflictType)
+	}
+}
+
+func TestDetectConflicts_LLMEscalation_NoConflict(t *testing.T) {
+	existing := testMemory("mem-1", "User works in tech")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.7}}, nil
+		},
+	}
+	provider := &mockProvider{
+		detectConflictFn: func(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+			return &llm.ConflictCheckResponse{Contradicts: false}, nil
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = true
+	d := NewConflictDetector(store, provider, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User likes programming", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.HasConflict {
+		t.Error("LLM said no conflict, should not flag")
+	}
+}
+
+func TestDetectConflicts_LLMEscalation_LLMError(t *testing.T) {
+	// Use content that won't match any pattern (no negation, no temporal keywords, no numbers, different types)
+	existing := testMemory("mem-1", "User is allergic to shellfish")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.7}}, nil
+		},
+	}
+	provider := &mockProvider{
+		detectConflictFn: func(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+			return nil, fmt.Errorf("LLM timeout")
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = true
+	d := NewConflictDetector(store, provider, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User enjoys eating shrimp", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("LLM error should not propagate: %v", err)
+	}
+	if result.HasConflict {
+		t.Error("LLM failure should be non-fatal, no conflict")
+	}
+}
+
+func TestDetectConflicts_LLMDisabled(t *testing.T) {
+	existing := testMemory("mem-1", "User is allergic to shellfish")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.75}}, nil
+		},
+	}
+	llmCalled := false
+	provider := &mockProvider{
+		detectConflictFn: func(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+			llmCalled = true
+			return &llm.ConflictCheckResponse{Contradicts: true, ConflictType: "contradiction"}, nil
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = false // disabled
+	d := NewConflictDetector(store, provider, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User enjoys eating shrimp", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if llmCalled {
+		t.Error("LLM should not be called when disabled")
+	}
+	if result.HasConflict {
+		t.Error("no conflict expected when LLM is disabled and patterns don't catch it")
+	}
+}
+
+func TestHeuristicConflict_BooleanContradiction(t *testing.T) {
+	existing := testMemory("mem-1", "User always exercises in the morning")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.8}}, nil
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = false
+	d := NewConflictDetector(store, &mockProvider{}, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User never exercises in the morning", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if !result.HasConflict {
+		t.Error("expected boolean contradiction (always/never)")
+	}
+}
+
+func TestHeuristicConflict_SameNumbers(t *testing.T) {
+	existing := testMemory("mem-1", "User has 3 cats")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{{Memory: existing, Similarity: 0.8}}, nil
+		},
+	}
+	cfg := DefaultConflictConfig()
+	cfg.EnableLLMConflictCheck = false
+	d := NewConflictDetector(store, &mockProvider{}, cfg)
+
+	result, err := d.DetectConflicts(context.Background(), "entity-1", "User has 3 cats at home", testEmbedding(), storage.TypeContext)
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.HasConflict {
+		t.Error("same numbers should not flag as conflict")
 	}
 }
 

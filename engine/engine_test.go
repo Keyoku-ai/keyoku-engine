@@ -600,3 +600,164 @@ func TestNewEngine_DefaultContextTurns(t *testing.T) {
 		t.Errorf("ContextTurns = %d, want 5 (default)", e.config.ContextTurns)
 	}
 }
+
+func TestEngine_Add_SignificanceFilter_Skips(t *testing.T) {
+	llmCalled := false
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			llmCalled = true
+			return &llm.ExtractionResponse{}, nil
+		},
+	}
+	store := &mockStore{}
+	emb := &mockEmbedder{dimensions: 3}
+
+	// Create engine WITH significance filter enabled (don't use newTestEngine which disables it)
+	cfg := DefaultEngineConfig()
+	e := NewEngine(provider, emb, store, cfg)
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "ok"})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", result.Skipped)
+	}
+	if llmCalled {
+		t.Error("LLM should not be called for trivial content")
+	}
+	if len(result.Details) == 0 || result.Details[0].Reason != "trivial phrase" {
+		t.Error("expected reason 'trivial phrase'")
+	}
+}
+
+func TestEngine_Add_TokenBudget_Exceeded(t *testing.T) {
+	llmCalled := false
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			llmCalled = true
+			return &llm.ExtractionResponse{}, nil
+		},
+	}
+	store := &mockStore{}
+	emb := &mockEmbedder{dimensions: 3}
+
+	cfg := DefaultEngineConfig()
+	disabled := SignificanceConfig{Enabled: false}
+	cfg.Significance = &disabled
+	cfg.TokenBudget = &TokenBudgetConfig{MaxTokensPerMinute: 100}
+	e := NewEngine(provider, emb, store, cfg)
+
+	// Exhaust budget
+	e.tokenBudget.Record("entity-1", 100)
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I really like Go programming"})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", result.Skipped)
+	}
+	if llmCalled {
+		t.Error("LLM should not be called when budget exceeded")
+	}
+	if len(result.Details) == 0 || result.Details[0].Reason != "token budget exceeded" {
+		t.Error("expected reason 'token budget exceeded'")
+	}
+	usage := e.tokenBudget.GetUsage("entity-1")
+	if usage.BudgetExceeded != 1 {
+		t.Errorf("BudgetExceeded = %d, want 1", usage.BudgetExceeded)
+	}
+}
+
+func TestEngine_Add_ConflictDetection(t *testing.T) {
+	// Existing memory that the new content will contradict via negation pattern
+	existing := testMemory("mem-existing", "User likes pizza")
+
+	var archivedID string
+	// Use 0.65 similarity — below dedup semantic threshold (0.90) and near-dup (0.80)
+	// but above conflict detection threshold (0.6)
+	conflictResults := []*storage.SimilarityResult{{Memory: existing, Similarity: 0.65}}
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, minScore float64) ([]*storage.SimilarityResult, error) {
+			// Dedup uses higher threshold (0.80), conflict uses 0.6
+			if minScore > 0.7 {
+				return nil, nil // dedup won't find it
+			}
+			return conflictResults, nil // conflict will find it
+		},
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return conflictResults, nil
+		},
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "mem-new"
+			return nil
+		},
+		updateMemoryFn: func(_ context.Context, id string, updates storage.MemoryUpdate) (*storage.Memory, error) {
+			if updates.State != nil && *updates.State == storage.StateArchived {
+				archivedID = id
+			}
+			return &storage.Memory{ID: id}, nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "User doesn't like pizza", Type: "PREFERENCE", Importance: 0.7, Confidence: 0.9},
+				},
+			}, nil
+		},
+	}
+	emb := &mockEmbedder{dimensions: 3}
+
+	e := newTestEngine(store, provider, emb)
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I don't like pizza anymore"})
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	// Conflict detected: negation pattern "likes" vs "doesn't like"
+	// Should archive old and create new
+	if result.MemoriesCreated != 1 {
+		t.Errorf("MemoriesCreated = %d, want 1", result.MemoriesCreated)
+	}
+	if archivedID != "mem-existing" {
+		t.Errorf("expected existing memory to be archived, got archived ID=%q", archivedID)
+	}
+}
+
+func TestEngine_Add_Concurrent(t *testing.T) {
+	store := &mockStore{
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "mem-concurrent"
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "test memory", Type: "CONTEXT", Importance: 0.5, Confidence: 0.8},
+				},
+			}, nil
+		},
+	}
+	emb := &mockEmbedder{dimensions: 3}
+
+	e := newTestEngine(store, provider, emb)
+
+	errs := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		go func(idx int) {
+			_, err := e.Add(context.Background(), "entity-1", AddRequest{
+				Content: "I work on distributed systems and enjoy coding",
+			})
+			errs <- err
+		}(i)
+	}
+	for i := 0; i < 5; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent Add error: %v", err)
+		}
+	}
+}

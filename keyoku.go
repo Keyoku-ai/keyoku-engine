@@ -27,19 +27,21 @@ import (
 
 // Re-export commonly used types so users import only the keyoku package.
 type (
-	Memory           = storage.Memory
-	MemoryType       = storage.MemoryType
-	MemoryState      = storage.MemoryState
-	MemoryVisibility = storage.MemoryVisibility
-	Team             = storage.Team
-	TeamMember       = storage.TeamMember
-	Entity           = storage.Entity
-	EntityType       = storage.EntityType
-	Relationship     = storage.Relationship
-	ExtractionSchema = storage.ExtractionSchema
-	CustomExtraction = storage.CustomExtraction
-	SearchResult     = engine.QueryResult
-	Stats            = engine.Stats
+	Memory                    = storage.Memory
+	MemoryType                = storage.MemoryType
+	MemoryState               = storage.MemoryState
+	MemoryVisibility          = storage.MemoryVisibility
+	Team                      = storage.Team
+	TeamMember                = storage.TeamMember
+	Entity                    = storage.Entity
+	EntityType                = storage.EntityType
+	Relationship              = storage.Relationship
+	ExtractionSchema          = storage.ExtractionSchema
+	CustomExtraction          = storage.CustomExtraction
+	SearchResult              = engine.QueryResult
+	Stats                     = engine.Stats
+	HeartbeatAnalysisRequest  = llm.HeartbeatAnalysisRequest
+	HeartbeatAnalysisResponse = llm.HeartbeatAnalysisResponse
 )
 
 // Re-export visibility constants.
@@ -164,6 +166,11 @@ func New(cfg Config) (*Keyoku, error) {
 	}
 
 	return k, nil
+}
+
+// Provider returns the LLM provider, or nil if not configured.
+func (k *Keyoku) Provider() llm.Provider {
+	return k.provider
 }
 
 // SetStore sets the storage backend. Used for testing or custom storage.

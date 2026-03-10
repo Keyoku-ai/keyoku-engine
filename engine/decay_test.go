@@ -322,6 +322,47 @@ func TestTimeUntilDecay(t *testing.T) {
 
 // --- Scenario tests: Real-world AI agent memory lifecycle ---
 
+func TestCalculateNewStabilityWithAccess_Direct(t *testing.T) {
+	lastAccess := time.Now().Add(-3 * 24 * time.Hour) // 3 days ago
+
+	t.Run("accessCount=0 matches base", func(t *testing.T) {
+		base := CalculateNewStability(10.0, &lastAccess)
+		withAccess := CalculateNewStabilityWithAccess(10.0, &lastAccess, 0)
+		if base != withAccess {
+			t.Errorf("accessCount=0 should equal base: %f vs %f", base, withAccess)
+		}
+	})
+
+	t.Run("accessCount=20 higher than 0", func(t *testing.T) {
+		s0 := CalculateNewStabilityWithAccess(10.0, &lastAccess, 0)
+		s20 := CalculateNewStabilityWithAccess(10.0, &lastAccess, 20)
+		if s20 <= s0 {
+			t.Errorf("accessCount=20 should produce higher stability: %f vs %f", s20, s0)
+		}
+	})
+
+	t.Run("accessCount=100 even higher but bounded", func(t *testing.T) {
+		s20 := CalculateNewStabilityWithAccess(10.0, &lastAccess, 20)
+		s100 := CalculateNewStabilityWithAccess(10.0, &lastAccess, 100)
+		if s100 <= s20 {
+			t.Errorf("accessCount=100 should be higher than 20: %f vs %f", s100, s20)
+		}
+		// The compound bonus is capped at 1.15x, so the difference should be modest
+		ratio := s100 / s20
+		if ratio > 1.2 {
+			t.Errorf("compound bonus should be bounded, ratio %f is too high", ratio)
+		}
+	})
+
+	t.Run("nil lastAccess with nonzero accessCount", func(t *testing.T) {
+		s := CalculateNewStabilityWithAccess(10.0, nil, 50)
+		// nil lastAccess → no time delta → growth factor = 1.0 × compound bonus
+		if s <= 10.0 {
+			t.Errorf("should apply compound bonus even with nil lastAccess: %f", s)
+		}
+	})
+}
+
 func TestScenario_ContextMemoryWithFrequentAccess(t *testing.T) {
 	// CONTEXT memory (21d stability) accessed 30 times over 2 weeks.
 	// Should still be active at day 30 due to access-frequency modifier.

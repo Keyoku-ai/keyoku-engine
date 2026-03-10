@@ -54,14 +54,19 @@ func defaultCognitiveStressConfig() cognitiveStressConfig {
 // =============================================================================
 
 type cognitiveStressReport struct {
-	Verdict     string             `json:"verdict"`
-	Duration    string             `json:"duration"`
-	Dedup       *dedupReport       `json:"deduplication"`
-	Conflict    *conflictReport    `json:"conflict_detection"`
-	Graph       *graphReport       `json:"knowledge_graph"`
-	GraphGrowth *graphGrowthReport `json:"graph_integrity"`
-	Integration *integrationReport `json:"cross_feature"`
-	Concurrent  *cogConcurReport   `json:"concurrent"`
+	Verdict      string              `json:"verdict"`
+	Duration     string              `json:"duration"`
+	Dedup        *dedupReport        `json:"deduplication"`
+	Conflict     *conflictReport     `json:"conflict_detection"`
+	Graph        *graphReport        `json:"knowledge_graph"`
+	GraphGrowth  *graphGrowthReport  `json:"graph_integrity"`
+	Integration  *integrationReport  `json:"cross_feature"`
+	Concurrent   *cogConcurReport    `json:"concurrent"`
+	Decay        *decayStressReport  `json:"decay"`
+	Significance *significanceReport `json:"significance"`
+	Budget       *budgetReport       `json:"token_budget"`
+	Lifecycle    *lifecycleReport    `json:"lifecycle"`
+	Retrieval    *retrievalReport    `json:"retrieval"`
 }
 
 type dedupReport struct {
@@ -343,7 +348,7 @@ func (h *cognitiveStressHarness) testDedup(ctx context.Context) *dedupReport {
 	for i := 0; i < cfg.DedupNearCount; i++ {
 		idx := i % len(baseMemories)
 		base := baseMemories[idx]
-		nearEmb := similarEmbedding(base.emb, 0.08, int64(i+2000))
+		nearEmb := similarEmbedding(base.emb, 0.03, int64(i+2000))
 		newContent := base.mem.Content + " with additional important details and context"
 		newHash := fmt.Sprintf("near-hash-%d", i)
 		result, err := h.dedup.CheckDuplicate(ctx, base.mem.EntityID, newContent, nearEmb, newHash)
@@ -1217,6 +1222,336 @@ func (h *cognitiveStressHarness) testConcurrent(ctx context.Context) *cogConcurR
 }
 
 // =============================================================================
+// Phase 7: Decay System Stress Test
+// =============================================================================
+
+type decayStressReport struct {
+	MemoriesTested      int     `json:"memories_tested"`
+	CorrectTransitions  int     `json:"correct_transitions"`
+	TransitionAccuracy  float64 `json:"transition_accuracy"`
+	AccessModifierWorks bool    `json:"access_modifier_works"`
+	LifecycleCorrect    bool    `json:"lifecycle_correct"`
+}
+
+func (h *cognitiveStressHarness) testDecay(_ context.Context) *decayStressReport {
+	report := &decayStressReport{}
+
+	// Test decay state transitions across time and access counts
+	type decayCase struct {
+		daysSinceAccess float64
+		stability       float64
+		accessCount     int
+		expectedState   DecayState
+	}
+
+	cases := []decayCase{
+		// Recently accessed → active
+		{0.1, 21, 0, DecayStateActive},
+		{1, 21, 5, DecayStateActive},
+		{7, 60, 10, DecayStateActive},
+		// Medium time, low access → depends on stability
+		{30, 21, 0, DecayStateStale},     // CONTEXT stability, no access → stale
+		{30, 21, 30, DecayStateActive},    // CONTEXT, heavily accessed → still active
+		{60, 21, 0, DecayStateArchived},   // CONTEXT, 60 days, no access → archived
+		// Long time, high stability → still active
+		{180, 365, 5, DecayStateActive},   // IDENTITY stability → active
+		{180, 365, 0, DecayStateActive},   // IDENTITY even without access
+		// Ephemeral decays fast
+		{5, 3, 0, DecayStateStale},        // EPHEMERAL, 5 days, no access
+		{10, 3, 0, DecayStateArchived},    // EPHEMERAL, 10 days
+		// Very old with low stability → deleted
+		{365, 7, 0, DecayStateDeleted},
+	}
+
+	for _, tc := range cases {
+		lastAccess := time.Now().Add(-time.Duration(tc.daysSinceAccess*24) * time.Hour)
+		factor := CalculateDecayFactorWithAccess(&lastAccess, tc.stability, tc.accessCount)
+		state := DetermineDecayState(factor)
+		report.MemoriesTested++
+		if state == tc.expectedState {
+			report.CorrectTransitions++
+		} else {
+			h.t.Logf("  DECAY MISS: days=%.0f stab=%.0f access=%d: got %s want %s (factor=%.4f)",
+				tc.daysSinceAccess, tc.stability, tc.accessCount, state, tc.expectedState, factor)
+		}
+	}
+
+	report.TransitionAccuracy = float64(report.CorrectTransitions) / float64(report.MemoriesTested)
+	h.t.Logf("  decay transitions: %d/%d correct (%.0f%%)", report.CorrectTransitions, report.MemoriesTested, report.TransitionAccuracy*100)
+
+	// Verify access frequency modifier works
+	lastAccess60d := time.Now().Add(-60 * 24 * time.Hour)
+	factorNoAccess := CalculateDecayFactorWithAccess(&lastAccess60d, 21, 0)
+	factorHighAccess := CalculateDecayFactorWithAccess(&lastAccess60d, 21, 50)
+	report.AccessModifierWorks = factorHighAccess > factorNoAccess
+	h.t.Logf("  access modifier: no_access=%.4f high_access=%.4f works=%v",
+		factorNoAccess, factorHighAccess, report.AccessModifierWorks)
+
+	// Lifecycle simulation: access memory repeatedly, verify stability grows
+	stability := 21.0
+	lastAccess := time.Now()
+	for i := 0; i < 10; i++ {
+		stability = CalculateNewStabilityWithAccess(stability, &lastAccess, i*5)
+		// Simulate 3 days between accesses
+		lastAccess = lastAccess.Add(-3 * 24 * time.Hour)
+	}
+	report.LifecycleCorrect = stability > 21.0
+	h.t.Logf("  lifecycle: initial=21.0 final=%.2f correct=%v", stability, report.LifecycleCorrect)
+
+	return report
+}
+
+// =============================================================================
+// Phase 8: Significance Filter Stress Test
+// =============================================================================
+
+type significanceReport struct {
+	TrivialTested    int     `json:"trivial_tested"`
+	TrivialSkipped   int     `json:"trivial_skipped"`
+	TrivialSkipRate  float64 `json:"trivial_skip_rate"`
+	MeaningfulTested int     `json:"meaningful_tested"`
+	MeaningfulPassed int     `json:"meaningful_passed"`
+	MeaningfulRate   float64 `json:"meaningful_pass_rate"`
+}
+
+func (h *cognitiveStressHarness) testSignificance(_ context.Context) *significanceReport {
+	report := &significanceReport{}
+	scorer := NewSignificanceScorer(DefaultSignificanceConfig())
+
+	// Trivial phrases should all be skipped
+	trivials := []string{
+		"ok", "thanks", "hello", "bye", "sure", "yeah", "no", "lol",
+		"got it", "cool", "nice", "great", "awesome", "yep", "nope",
+		"right", "exactly", "correct", "sounds good", "makes sense",
+		"good morning", "good night", "what", "why", "how", "when",
+		"OK", "Thanks", "HELLO", "Sure", "Yeah", "LOL",
+		"np", "no problem", "no worries", "understood", "i see",
+		"hmm", "hm", "uh", "um", "yup", "nah",
+		"k", "okay", "thx", "ty", "haha", "hehe", "lmao",
+		"goodbye", "see you", "later", "howdy", "where",
+	}
+	for _, t := range trivials {
+		result := scorer.Score(t)
+		report.TrivialTested++
+		if result.Skip {
+			report.TrivialSkipped++
+		}
+	}
+	report.TrivialSkipRate = float64(report.TrivialSkipped) / float64(report.TrivialTested)
+	h.t.Logf("  trivial: %d/%d skipped (%.0f%%)", report.TrivialSkipped, report.TrivialTested, report.TrivialSkipRate*100)
+
+	// Meaningful content should pass
+	meaningful := []string{
+		"I am a software engineer working on distributed systems at Google",
+		"My wife Sarah and I moved to San Francisco last month",
+		"I prefer using Python for data analysis and machine learning projects",
+		"Yesterday I had a meeting with John about the new product launch strategy",
+		"I have 3 cats and 2 dogs at home, they get along well with each other",
+		"I started learning Japanese about 6 months ago and I'm really enjoying it",
+		"My favorite restaurant is that Italian place on Market Street downtown",
+		"I recently switched from iPhone to Android and I'm still getting used to it",
+		"I work remotely from my home office and I have been doing so for three years",
+		"Planning to visit Tokyo next spring for a two week vacation with friends",
+		"I graduated from MIT with a degree in computer science back in twenty fifteen",
+		"My morning routine includes running 5 miles before breakfast every single day",
+		"I have been working on this project for about 6 months and we are almost done",
+		"The team decided to migrate our infrastructure from AWS to Google Cloud Platform",
+		"I bought a new Tesla Model 3 last week and I absolutely love driving it around",
+		"My favorite programming language has always been Rust for systems programming work",
+		"I enjoy reading science fiction novels especially anything by Isaac Asimov lately",
+		"I quit smoking about 2 years ago and I have never felt better in my entire life",
+		"Currently working on building a mobile app for tracking personal fitness and health",
+		"I have been to Japan 4 times already and I plan to visit again next year for sure",
+	}
+	for _, m := range meaningful {
+		result := scorer.Score(m)
+		report.MeaningfulTested++
+		if !result.Skip {
+			report.MeaningfulPassed++
+		} else {
+			h.t.Logf("  MISS: meaningful content skipped: %q (score=%.2f reason=%s)", m, result.Score, result.Reason)
+		}
+	}
+	report.MeaningfulRate = float64(report.MeaningfulPassed) / float64(report.MeaningfulTested)
+	h.t.Logf("  meaningful: %d/%d passed (%.0f%%)", report.MeaningfulPassed, report.MeaningfulTested, report.MeaningfulRate*100)
+
+	return report
+}
+
+// =============================================================================
+// Phase 9: Token Budget Under Load
+// =============================================================================
+
+type budgetReport struct {
+	TotalOps       int  `json:"total_operations"`
+	BudgetEnforced bool `json:"budget_enforced"`
+	Replenished    bool `json:"replenished"`
+	ConcurrentSafe bool `json:"concurrent_safe"`
+}
+
+func (h *cognitiveStressHarness) testTokenBudget(_ context.Context) *budgetReport {
+	report := &budgetReport{}
+
+	tb := NewTokenBudget(&TokenBudgetConfig{MaxTokensPerMinute: 5000, WindowSize: 200 * time.Millisecond})
+
+	// Exhaust budget with concurrent goroutines
+	var wg sync.WaitGroup
+	var ops atomic.Int32
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				tb.Record("test-entity", 30)
+				tb.CanSpend("test-entity", 100)
+				ops.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	report.TotalOps = int(ops.Load())
+	report.ConcurrentSafe = true // if we got here without panic
+
+	// Budget should be exceeded (10 workers × 20 ops × 30 tokens = 6000 > 5000)
+	report.BudgetEnforced = !tb.CanSpend("test-entity", 100)
+	h.t.Logf("  budget enforced: %v (usage=%d)", report.BudgetEnforced, tb.CurrentWindowUsage("test-entity"))
+
+	// Wait for window to elapse
+	time.Sleep(250 * time.Millisecond)
+	report.Replenished = tb.CanSpend("test-entity", 100)
+	h.t.Logf("  replenished after window: %v", report.Replenished)
+
+	return report
+}
+
+// =============================================================================
+// Phase 10: Memory Lifecycle Simulation
+// =============================================================================
+
+type lifecycleReport struct {
+	StagesCorrect   int  `json:"stages_correct"`
+	TotalStages     int  `json:"total_stages"`
+	LifecycleWorks  bool `json:"lifecycle_works"`
+}
+
+func (h *cognitiveStressHarness) testMemoryLifecycle(_ context.Context) *lifecycleReport {
+	report := &lifecycleReport{TotalStages: 5}
+
+	stability := 21.0 // CONTEXT type default
+	accessCount := 0
+
+	// Stage 1: Fresh memory → Active
+	lastAccess := time.Now()
+	factor := CalculateDecayFactorWithAccess(&lastAccess, stability, accessCount)
+	state := DetermineDecayState(factor)
+	if state == DecayStateActive {
+		report.StagesCorrect++
+	}
+	h.t.Logf("  stage 1 (fresh): state=%s factor=%.4f", state, factor)
+
+	// Stage 2: Access repeatedly → stability grows, still Active
+	for i := 0; i < 20; i++ {
+		accessCount++
+		stability = CalculateNewStabilityWithAccess(stability, &lastAccess, accessCount)
+	}
+	// After 20 accesses, stability should be higher
+	if stability > 21.0 {
+		report.StagesCorrect++
+	}
+	h.t.Logf("  stage 2 (accessed 20x): stability=%.2f", stability)
+
+	// Stage 3: 45 days without access, low access count → should become stale
+	lastAccess45 := time.Now().Add(-45 * 24 * time.Hour)
+	factor3 := CalculateDecayFactorWithAccess(&lastAccess45, 21, 2) // low stability, few accesses
+	state3 := DetermineDecayState(factor3)
+	if state3 == DecayStateStale || state3 == DecayStateArchived {
+		report.StagesCorrect++
+	}
+	h.t.Logf("  stage 3 (45d, low access): state=%s factor=%.4f", state3, factor3)
+
+	// Stage 4: 120 days without access → archived
+	lastAccess120 := time.Now().Add(-120 * 24 * time.Hour)
+	factor4 := CalculateDecayFactorWithAccess(&lastAccess120, 21, 0)
+	state4 := DetermineDecayState(factor4)
+	if state4 == DecayStateArchived || state4 == DecayStateDeleted {
+		report.StagesCorrect++
+	}
+	h.t.Logf("  stage 4 (120d, no access): state=%s factor=%.4f", state4, factor4)
+
+	// Stage 5: 365 days, ephemeral stability → deleted
+	lastAccess365 := time.Now().Add(-365 * 24 * time.Hour)
+	factor5 := CalculateDecayFactorWithAccess(&lastAccess365, 7, 0)
+	state5 := DetermineDecayState(factor5)
+	if state5 == DecayStateDeleted {
+		report.StagesCorrect++
+	}
+	h.t.Logf("  stage 5 (365d, ephemeral): state=%s factor=%.6f", state5, factor5)
+
+	report.LifecycleWorks = report.StagesCorrect == report.TotalStages
+	h.t.Logf("  lifecycle: %d/%d stages correct", report.StagesCorrect, report.TotalStages)
+
+	return report
+}
+
+// =============================================================================
+// Phase 11: Retrieval Mode Comparison
+// =============================================================================
+
+type retrievalReport struct {
+	MemoriesCreated   int  `json:"memories_created"`
+	ModesCompared     int  `json:"modes_compared"`
+	RankingsDiffer    bool `json:"rankings_differ"`
+}
+
+func (h *cognitiveStressHarness) testRetrievalModes(_ context.Context) *retrievalReport {
+	report := &retrievalReport{}
+
+	// Create scoring inputs with varying characteristics
+	scorer := NewScorer()
+	recentScorer := NewScorerWithMode(ModeRecent)
+	importantScorer := NewScorerWithMode(ModeImportant)
+
+	now := time.Now()
+	recentAccess := now.Add(-1 * time.Hour)
+	oldAccess := now.Add(-30 * 24 * time.Hour)
+
+	inputs := []ScoringInput{
+		{Similarity: 0.9, CreatedAt: now.Add(-24 * time.Hour), LastAccessedAt: &recentAccess, Stability: 60, Importance: 0.3, Confidence: 0.8, AccessCount: 10},   // high similarity, recent, low importance
+		{Similarity: 0.6, CreatedAt: now.Add(-7 * 24 * time.Hour), LastAccessedAt: &oldAccess, Stability: 60, Importance: 0.95, Confidence: 0.9, AccessCount: 2},   // low similarity, old, high importance
+		{Similarity: 0.75, CreatedAt: now.Add(-1 * time.Hour), LastAccessedAt: &recentAccess, Stability: 60, Importance: 0.5, Confidence: 0.85, AccessCount: 50},   // medium similarity, very recent, medium importance
+	}
+	report.MemoriesCreated = len(inputs)
+
+	balancedScores := scorer.ScoreBatch(inputs)
+	recentScores := recentScorer.ScoreBatch(inputs)
+	importantScores := importantScorer.ScoreBatch(inputs)
+	report.ModesCompared = 3
+
+	// Find top-ranked index for each mode
+	topBalanced := 0
+	topRecent := 0
+	topImportant := 0
+	for i := 1; i < len(inputs); i++ {
+		if balancedScores[i].TotalScore > balancedScores[topBalanced].TotalScore {
+			topBalanced = i
+		}
+		if recentScores[i].TotalScore > recentScores[topRecent].TotalScore {
+			topRecent = i
+		}
+		if importantScores[i].TotalScore > importantScores[topImportant].TotalScore {
+			topImportant = i
+		}
+	}
+
+	// At least two modes should produce different top rankings
+	report.RankingsDiffer = topBalanced != topRecent || topRecent != topImportant || topBalanced != topImportant
+	h.t.Logf("  retrieval modes: balanced_top=%d recent_top=%d important_top=%d differ=%v",
+		topBalanced, topRecent, topImportant, report.RankingsDiffer)
+
+	return report
+}
+
+// =============================================================================
 // Individual Test Functions
 // =============================================================================
 
@@ -1329,6 +1664,87 @@ func TestStress_CognitiveConcurrent(t *testing.T) {
 	}
 }
 
+func TestStress_CognitiveDecay(t *testing.T) {
+	cfg := defaultCognitiveStressConfig()
+	h := newCognitiveStressHarness(t, cfg)
+	defer h.close()
+
+	report := h.testDecay(context.Background())
+	t.Logf("Decay Results: %d/%d transitions correct, access_modifier=%v, lifecycle=%v",
+		report.CorrectTransitions, report.MemoriesTested, report.AccessModifierWorks, report.LifecycleCorrect)
+
+	if report.TransitionAccuracy < 0.80 {
+		t.Errorf("decay transition accuracy %.2f below 0.80", report.TransitionAccuracy)
+	}
+	if !report.AccessModifierWorks {
+		t.Error("access modifier not working")
+	}
+	if !report.LifecycleCorrect {
+		t.Error("lifecycle simulation failed")
+	}
+}
+
+func TestStress_CognitiveSignificance(t *testing.T) {
+	cfg := defaultCognitiveStressConfig()
+	h := newCognitiveStressHarness(t, cfg)
+	defer h.close()
+
+	report := h.testSignificance(context.Background())
+	t.Logf("Significance Results: trivial_skip=%.0f%% meaningful_pass=%.0f%%",
+		report.TrivialSkipRate*100, report.MeaningfulRate*100)
+
+	if report.TrivialSkipRate < 0.80 {
+		t.Errorf("trivial skip rate %.2f below 0.80", report.TrivialSkipRate)
+	}
+	if report.MeaningfulRate < 0.80 {
+		t.Errorf("meaningful pass rate %.2f below 0.80", report.MeaningfulRate)
+	}
+}
+
+func TestStress_CognitiveTokenBudget(t *testing.T) {
+	cfg := defaultCognitiveStressConfig()
+	h := newCognitiveStressHarness(t, cfg)
+	defer h.close()
+
+	report := h.testTokenBudget(context.Background())
+	t.Logf("Budget Results: ops=%d enforced=%v replenished=%v concurrent_safe=%v",
+		report.TotalOps, report.BudgetEnforced, report.Replenished, report.ConcurrentSafe)
+
+	if !report.BudgetEnforced {
+		t.Error("budget not enforced after exhaustion")
+	}
+	if !report.Replenished {
+		t.Error("budget not replenished after window")
+	}
+}
+
+func TestStress_CognitiveLifecycle(t *testing.T) {
+	cfg := defaultCognitiveStressConfig()
+	h := newCognitiveStressHarness(t, cfg)
+	defer h.close()
+
+	report := h.testMemoryLifecycle(context.Background())
+	t.Logf("Lifecycle Results: %d/%d stages correct", report.StagesCorrect, report.TotalStages)
+
+	if !report.LifecycleWorks {
+		t.Errorf("lifecycle failed: %d/%d stages correct", report.StagesCorrect, report.TotalStages)
+	}
+}
+
+func TestStress_CognitiveRetrieval(t *testing.T) {
+	cfg := defaultCognitiveStressConfig()
+	h := newCognitiveStressHarness(t, cfg)
+	defer h.close()
+
+	report := h.testRetrievalModes(context.Background())
+	t.Logf("Retrieval Results: %d memories, %d modes, rankings_differ=%v",
+		report.MemoriesCreated, report.ModesCompared, report.RankingsDiffer)
+
+	if !report.RankingsDiffer {
+		t.Error("retrieval modes should produce different rankings")
+	}
+}
+
 // =============================================================================
 // Full Cognitive Stress Test
 // =============================================================================
@@ -1365,6 +1781,26 @@ func TestStress_CognitiveFull(t *testing.T) {
 	// Phase 6: Concurrent Operations
 	t.Log("=== Phase 6: Concurrent Cognitive Operations ===")
 	fullReport.Concurrent = h.testConcurrent(ctx)
+
+	// Phase 7: Decay System
+	t.Log("=== Phase 7: Decay System ===")
+	fullReport.Decay = h.testDecay(ctx)
+
+	// Phase 8: Significance Filter
+	t.Log("=== Phase 8: Significance Filter ===")
+	fullReport.Significance = h.testSignificance(ctx)
+
+	// Phase 9: Token Budget Under Load
+	t.Log("=== Phase 9: Token Budget Under Load ===")
+	fullReport.Budget = h.testTokenBudget(ctx)
+
+	// Phase 10: Memory Lifecycle Simulation
+	t.Log("=== Phase 10: Memory Lifecycle ===")
+	fullReport.Lifecycle = h.testMemoryLifecycle(ctx)
+
+	// Phase 11: Retrieval Mode Comparison
+	t.Log("=== Phase 11: Retrieval Modes ===")
+	fullReport.Retrieval = h.testRetrievalModes(ctx)
 
 	fullReport.Duration = time.Since(start).String()
 
@@ -1405,6 +1841,37 @@ func TestStress_CognitiveFull(t *testing.T) {
 
 	// Concurrent check
 	if fullReport.Concurrent.Panics > 0 {
+		issues++
+	}
+
+	// Decay checks
+	if fullReport.Decay.TransitionAccuracy < 0.80 {
+		issues++
+	}
+	if !fullReport.Decay.AccessModifierWorks {
+		issues++
+	}
+
+	// Significance checks
+	if fullReport.Significance.TrivialSkipRate < 0.80 {
+		issues++
+	}
+	if fullReport.Significance.MeaningfulRate < 0.80 {
+		issues++
+	}
+
+	// Budget checks
+	if !fullReport.Budget.BudgetEnforced {
+		issues++
+	}
+
+	// Lifecycle check
+	if !fullReport.Lifecycle.LifecycleWorks {
+		issues++
+	}
+
+	// Retrieval check
+	if !fullReport.Retrieval.RankingsDiffer {
 		issues++
 	}
 

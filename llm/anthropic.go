@@ -436,6 +436,53 @@ func (a *AnthropicProvider) PrioritizeActions(ctx context.Context, req ActionPri
 	return &priorityResult, nil
 }
 
+func (a *AnthropicProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
+	toolParam := anthropic.ToolParam{
+		Name:        "heartbeat_analysis",
+		Description: anthropic.String("Return the heartbeat context analysis"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"should_act":          map[string]interface{}{"type": "boolean", "description": "Whether the agent should act"},
+				"action_brief":        map[string]interface{}{"type": "string", "description": "Summary tailored to autonomy level"},
+				"recommended_actions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Specific actionable items"},
+				"urgency":             map[string]interface{}{"type": "string", "enum": []string{"none", "low", "medium", "high", "critical"}},
+				"reasoning":           map[string]interface{}{"type": "string", "description": "Why these actions matter now"},
+				"autonomy":            map[string]interface{}{"type": "string", "enum": []string{"observe", "suggest", "act"}},
+				"user_facing":         map[string]interface{}{"type": "string", "description": "Message to show the user"},
+			},
+		},
+	}
+
+	prompt := FormatHeartbeatAnalysisPrompt(req)
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are an AI agent's memory and planning system. Use the heartbeat_analysis tool to return your assessment."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("heartbeat_analysis"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic heartbeat analysis failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result HeartbeatAnalysisResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic heartbeat analysis response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func (a *AnthropicProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
 	toolParam := anthropic.ToolParam{
 		Name:        "summarize_graph",

@@ -115,23 +115,37 @@ type conflictJSON struct {
 // Combined heartbeat + context search in a single call.
 type heartbeatContextRequest struct {
 	EntityID        string  `json:"entity_id"`
-	Query           string  `json:"query,omitempty"`           // Current conversation context for memory search
-	TopK            int     `json:"top_k,omitempty"`           // Max relevant memories to return (default: 5)
-	MinScore        float64 `json:"min_score,omitempty"`       // Min similarity for context search (default: 0.1)
-	DeadlineWindow  string  `json:"deadline_window,omitempty"` // How far ahead to look (default: 24h)
-	MaxResults      int     `json:"max_results,omitempty"`     // Max signals per category (default: 10)
+	Query           string  `json:"query,omitempty"`             // Current conversation context for memory search
+	TopK            int     `json:"top_k,omitempty"`             // Max relevant memories to return (default: 5)
+	MinScore        float64 `json:"min_score,omitempty"`         // Min similarity for context search (default: 0.1)
+	DeadlineWindow  string  `json:"deadline_window,omitempty"`   // How far ahead to look (default: 24h)
+	MaxResults      int     `json:"max_results,omitempty"`       // Max signals per category (default: 10)
 	AgentID         string  `json:"agent_id,omitempty"`
 	TeamID          string  `json:"team_id,omitempty"`
+	Analyze         bool    `json:"analyze,omitempty"`           // Request LLM analysis of context
+	ActivitySummary string  `json:"activity_summary,omitempty"`  // Current conversation activity for LLM context
+	Autonomy        string  `json:"autonomy,omitempty"`          // "observe", "suggest", "act" (default: "suggest")
+}
+
+type heartbeatAnalysisJSON struct {
+	ShouldAct          bool     `json:"should_act"`
+	ActionBrief        string   `json:"action_brief"`
+	RecommendedActions []string `json:"recommended_actions"`
+	Urgency            string   `json:"urgency"`
+	Reasoning          string   `json:"reasoning"`
+	Autonomy           string   `json:"autonomy"`
+	UserFacing         string   `json:"user_facing"`
 }
 
 type heartbeatContextResponse struct {
-	ShouldAct        bool              `json:"should_act"`
-	Scheduled        []memoryJSON      `json:"scheduled"`
-	Deadlines        []memoryJSON      `json:"deadlines"`
-	PendingWork      []memoryJSON      `json:"pending_work"`
-	Conflicts        []conflictJSON    `json:"conflicts"`
-	RelevantMemories []searchResultItem `json:"relevant_memories"`
-	Summary          string            `json:"summary"`
+	ShouldAct        bool                    `json:"should_act"`
+	Scheduled        []memoryJSON            `json:"scheduled"`
+	Deadlines        []memoryJSON            `json:"deadlines"`
+	PendingWork      []memoryJSON            `json:"pending_work"`
+	Conflicts        []conflictJSON          `json:"conflicts"`
+	RelevantMemories []searchResultItem      `json:"relevant_memories"`
+	Summary          string                  `json:"summary"`
+	Analysis         *heartbeatAnalysisJSON  `json:"analysis,omitempty"`
 }
 
 type watcherStartRequest struct {
@@ -457,7 +471,7 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 
 	shouldAct := hbResult.ShouldAct || len(relevantMemories) > 0
 
-	writeJSON(w, http.StatusOK, heartbeatContextResponse{
+	resp := heartbeatContextResponse{
 		ShouldAct:        shouldAct,
 		Scheduled:        toMemoryJSONSlice(hbResult.Scheduled),
 		Deadlines:        toMemoryJSONSlice(hbResult.Deadlines),
@@ -465,7 +479,73 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		Conflicts:        conflicts,
 		RelevantMemories: relevantMemories,
 		Summary:          hbResult.Summary,
-	})
+	}
+
+	// 4. LLM analysis (if requested and provider available)
+	if req.Analyze {
+		provider := h.k.Provider()
+		if provider != nil {
+			autonomy := req.Autonomy
+			if autonomy == "" {
+				autonomy = "suggest"
+			}
+
+			// Build string slices from signals for the LLM
+			scheduled := make([]string, 0, len(hbResult.Scheduled))
+			for _, m := range hbResult.Scheduled {
+				scheduled = append(scheduled, m.Content)
+			}
+			deadlines := make([]string, 0, len(hbResult.Deadlines))
+			for _, m := range hbResult.Deadlines {
+				deadlines = append(deadlines, m.Content)
+			}
+			pendingWork := make([]string, 0, len(hbResult.PendingWork))
+			for _, m := range hbResult.PendingWork {
+				pendingWork = append(pendingWork, m.Content)
+			}
+			conflictStrs := make([]string, 0, len(hbResult.Conflicts))
+			for _, c := range hbResult.Conflicts {
+				conflictStrs = append(conflictStrs, c.Reason)
+			}
+			memoryStrs := make([]string, 0, len(relevantMemories))
+			for _, m := range relevantMemories {
+				memoryStrs = append(memoryStrs, m.Memory.Content)
+			}
+
+			activitySummary := req.ActivitySummary
+			if activitySummary == "" {
+				activitySummary = req.Query // fall back to query
+			}
+
+			analysisResult, err := provider.AnalyzeHeartbeatContext(r.Context(), keyoku.HeartbeatAnalysisRequest{
+				ActivitySummary:  activitySummary,
+				Scheduled:        scheduled,
+				Deadlines:        deadlines,
+				PendingWork:      pendingWork,
+				Conflicts:        conflictStrs,
+				RelevantMemories: memoryStrs,
+				Autonomy:         autonomy,
+				AgentID:          req.AgentID,
+				EntityID:         req.EntityID,
+			})
+			if err == nil {
+				resp.Analysis = &heartbeatAnalysisJSON{
+					ShouldAct:          analysisResult.ShouldAct,
+					ActionBrief:        analysisResult.ActionBrief,
+					RecommendedActions: analysisResult.RecommendedActions,
+					Urgency:            analysisResult.Urgency,
+					Reasoning:          analysisResult.Reasoning,
+					Autonomy:           analysisResult.Autonomy,
+					UserFacing:         analysisResult.UserFacing,
+				}
+				// Override should_act with LLM's determination
+				resp.ShouldAct = analysisResult.ShouldAct
+			}
+			// LLM failure is non-fatal — raw signals still returned
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // HandleWatcherStart starts the proactive watcher.

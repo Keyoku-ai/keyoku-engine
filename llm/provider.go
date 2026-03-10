@@ -19,6 +19,7 @@ type Provider interface {
 	DetectConflict(ctx context.Context, req ConflictCheckRequest) (*ConflictCheckResponse, error)
 	ReEvaluateImportance(ctx context.Context, req ImportanceReEvalRequest) (*ImportanceReEvalResponse, error)
 	PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error)
+	AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error)
 	SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error)
 	Name() string
 	Model() string
@@ -352,6 +353,80 @@ func FormatActionPriorityPrompt(req ActionPriorityRequest) string {
 		entityCtx = "(no entity context provided)"
 	}
 	return fmt.Sprintf(actionPriorityPrompt, agentCtx, entityCtx, req.Summary)
+}
+
+const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning system. Analyze the context below and produce an action brief.
+
+## Autonomy Level: %s
+- "observe": Inform only. Generate observations the user should know about. Do NOT suggest actions.
+- "suggest": Propose specific actions with rationale. Ask for permission before executing.
+- "act": Generate direct execution commands. The agent WILL act on these autonomously.
+
+## Current Activity
+%s
+
+## Signals
+### Scheduled Tasks Due
+%s
+
+### Approaching Deadlines
+%s
+
+### Pending Work
+%s
+
+### Conflicts
+%s
+
+### Relevant Memories
+%s
+
+## Instructions
+Cross-reference the agent's current activity with all signals. Determine:
+1. Which signals are relevant to what the agent is currently doing?
+2. What needs immediate attention vs what can wait?
+3. Are there conflicts between current work and stored memories?
+
+Tailor your response to the autonomy level:
+- observe: action_brief = observations, user_facing = "FYI: ..." informational notes
+- suggest: action_brief = proposed plan, user_facing = "I'd recommend ... Want me to?" proposals
+- act: action_brief = execution plan, user_facing = "I'm going to ... because ..." status updates
+
+Return JSON with: should_act (bool), action_brief (string), recommended_actions (array of strings), urgency (one of: none, low, medium, high, critical), reasoning (string), autonomy (echo back the level), user_facing (string message for the user).
+
+If nothing needs attention, set should_act to false, urgency to "none", and user_facing to a brief "all clear" note.`
+
+// FormatHeartbeatAnalysisPrompt formats the heartbeat analysis prompt.
+func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
+	autonomy := req.Autonomy
+	if autonomy == "" {
+		autonomy = "suggest"
+	}
+	activity := req.ActivitySummary
+	if activity == "" {
+		activity = "(no recent activity)"
+	}
+
+	formatList := func(items []string) string {
+		if len(items) == 0 {
+			return "(none)"
+		}
+		result := ""
+		for _, item := range items {
+			result += fmt.Sprintf("- %s\n", item)
+		}
+		return result
+	}
+
+	return fmt.Sprintf(heartbeatAnalysisPrompt,
+		autonomy,
+		activity,
+		formatList(req.Scheduled),
+		formatList(req.Deadlines),
+		formatList(req.PendingWork),
+		formatList(req.Conflicts),
+		formatList(req.RelevantMemories),
+	)
 }
 
 const graphSummaryPrompt = `You are a knowledge graph reasoning system. Analyze the following entity relationships and provide a natural language summary.

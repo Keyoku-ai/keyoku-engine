@@ -149,6 +149,30 @@ type ActionPriorityResponse struct {
 	Urgency        string   `json:"urgency"` // immediate, soon, can_wait
 }
 
+// HeartbeatAnalysisRequest contains input for LLM-powered heartbeat context analysis.
+type HeartbeatAnalysisRequest struct {
+	ActivitySummary  string   // Recent conversation activity from the agent
+	Scheduled        []string // Scheduled task descriptions
+	Deadlines        []string // Approaching deadline descriptions
+	PendingWork      []string // Pending work descriptions
+	Conflicts        []string // Conflict descriptions
+	RelevantMemories []string // Semantically relevant memory texts
+	Autonomy         string   // "observe", "suggest", or "act"
+	AgentID          string
+	EntityID         string
+}
+
+// HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.
+type HeartbeatAnalysisResponse struct {
+	ShouldAct          bool     `json:"should_act"`
+	ActionBrief        string   `json:"action_brief"`
+	RecommendedActions []string `json:"recommended_actions"`
+	Urgency            string   `json:"urgency"`
+	Reasoning          string   `json:"reasoning"`
+	Autonomy           string   `json:"autonomy"`
+	UserFacing         string   `json:"user_facing"`
+}
+
 // GraphSummaryRequest contains input for LLM-powered graph reasoning.
 type GraphSummaryRequest struct {
 	Entities      []string // entity names/descriptions in the path

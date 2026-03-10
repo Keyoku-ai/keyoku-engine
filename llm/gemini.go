@@ -362,6 +362,44 @@ func (g *GeminiProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 	return &priorityResult, nil
 }
 
+func (g *GeminiProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"should_act":          {Type: genai.TypeBoolean},
+			"action_brief":        {Type: genai.TypeString},
+			"recommended_actions": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+			"urgency":             {Type: genai.TypeString, Enum: []string{"none", "low", "medium", "high", "critical"}},
+			"reasoning":           {Type: genai.TypeString},
+			"autonomy":            {Type: genai.TypeString, Enum: []string{"observe", "suggest", "act"}},
+			"user_facing":         {Type: genai.TypeString},
+		},
+		Required: []string{"should_act", "action_brief", "recommended_actions", "urgency", "reasoning", "autonomy", "user_facing"},
+	}
+	model.SetTemperature(0.3)
+	model.SetTopP(0.8)
+
+	prompt := FormatHeartbeatAnalysisPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini heartbeat analysis failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result HeartbeatAnalysisResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini heartbeat analysis response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func (g *GeminiProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
 	model := g.client.GenerativeModel(g.model)
 	model.ResponseMIMEType = "application/json"

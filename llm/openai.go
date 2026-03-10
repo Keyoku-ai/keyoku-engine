@@ -433,6 +433,54 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 	return &priorityResult, nil
 }
 
+func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
+	analysisSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
+		Name:   "heartbeat_analysis",
+		Strict: openai.Bool(true),
+		Schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"should_act":          map[string]interface{}{"type": "boolean"},
+				"action_brief":        map[string]interface{}{"type": "string"},
+				"recommended_actions": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				"urgency":             map[string]interface{}{"type": "string", "enum": []string{"none", "low", "medium", "high", "critical"}},
+				"reasoning":           map[string]interface{}{"type": "string"},
+				"autonomy":            map[string]interface{}{"type": "string", "enum": []string{"observe", "suggest", "act"}},
+				"user_facing":         map[string]interface{}{"type": "string"},
+			},
+			"required":             []string{"should_act", "action_brief", "recommended_actions", "urgency", "reasoning", "autonomy", "user_facing"},
+			"additionalProperties": false,
+		},
+	}
+
+	prompt := FormatHeartbeatAnalysisPrompt(req)
+	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(o.model),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("You are an AI agent's memory and planning system. Always respond with valid JSON only."),
+			openai.UserMessage(prompt),
+		},
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: analysisSchema},
+		},
+		Temperature: openai.Float(0.3),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI heartbeat analysis failed: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("OpenAI returned no choices")
+	}
+
+	var result HeartbeatAnalysisResponse
+	if err := json.Unmarshal([]byte(resp.Choices[0].Message.Content), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenAI heartbeat analysis response: %w", err)
+	}
+
+	return &result, nil
+}
+
 func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error) {
 	graphSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
 		Name:   "graph_summary",
