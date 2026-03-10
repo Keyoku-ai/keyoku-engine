@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package keyoku
 
 import (
@@ -267,6 +270,13 @@ func (m *testStore) GetAgentStateHistory(_ context.Context, _ string, _ int) ([]
 func (m *testStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStateHistory) error { return nil }
 func (m *testStore) AggregateStats(_ context.Context, _ string) (*storage.AggregatedStats, error) { return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil }
 func (m *testStore) SampleMemories(_ context.Context, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *testStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *testStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, _ int, _ storage.SimilarityOptions) ([]*storage.Memory, error) { return nil, nil }
+func (m *testStore) GetHNSWIndexSize() int { return 0 }
+func (m *testStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *testStore) RemoveFromHNSW(_ string) error { return nil }
+func (m *testStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
+func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *testStore) Close() error {
 	if m.closeFn != nil { return m.closeFn() }; return nil
 }

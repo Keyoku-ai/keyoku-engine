@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package vectorindex
 
 // SearchResult represents a vector search result with ID and distance.

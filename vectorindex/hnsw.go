@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package vectorindex
 
 import (
@@ -244,6 +247,17 @@ func (h *HNSW) Len() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.idToIx)
+}
+
+// IDs returns all external IDs currently in the index.
+func (h *HNSW) IDs() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]string, 0, len(h.idToIx))
+	for id := range h.idToIx {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 type candidate struct {

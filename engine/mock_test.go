@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package engine
 
 import (
@@ -473,6 +476,13 @@ func (m *mockStore) LogAgentStateHistory(_ context.Context, _ *storage.AgentStat
 }
 func (m *mockStore) AggregateStats(_ context.Context, _ string) (*storage.AggregatedStats, error) { return &storage.AggregatedStats{ByType: map[string]int{}, ByState: map[string]int{}}, nil }
 func (m *mockStore) SampleMemories(_ context.Context, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, _ int, _ storage.SimilarityOptions) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) GetHNSWIndexSize() int { return 0 }
+func (m *mockStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) RemoveFromHNSW(_ string) error { return nil }
+func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
+func (m *mockStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {
 	if m.closeFn != nil {
 		return m.closeFn()

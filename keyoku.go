@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 // Package keyoku provides an embedded memory engine for AI agents.
 //
 // Keyoku Embedded is a standalone Go library with SQLite + in-process HNSW vector

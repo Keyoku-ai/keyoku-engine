@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package storage
 
 import (
@@ -324,6 +327,31 @@ func (s *SQLiteStore) migrate() error {
 	for _, stmt := range teamIndexes {
 		s.db.Exec(stmt)
 	}
+
+	// FTS5 virtual table for full-text search (Tier 3 fallback)
+	s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+		content,
+		entity_id UNINDEXED,
+		memory_id UNINDEXED,
+		content='memories',
+		content_rowid='rowid'
+	)`)
+
+	// FTS triggers to keep index in sync
+	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
+		INSERT INTO memories_fts(rowid, content, entity_id, memory_id)
+		VALUES (new.rowid, new.content, new.entity_id, new.id);
+	END`)
+	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
+		INSERT INTO memories_fts(memories_fts, rowid, content, entity_id, memory_id)
+		VALUES ('delete', old.rowid, old.content, old.entity_id, old.id);
+	END`)
+	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF content ON memories BEGIN
+		INSERT INTO memories_fts(memories_fts, rowid, content, entity_id, memory_id)
+		VALUES ('delete', old.rowid, old.content, old.entity_id, old.id);
+		INSERT INTO memories_fts(rowid, content, entity_id, memory_id)
+		VALUES (new.rowid, new.content, new.entity_id, new.id);
+	END`)
 
 	// Performance indexes for reporting & aggregation
 	perfIndexes := []string{
@@ -2550,4 +2578,106 @@ func decodeEmbedding(data []byte) []float32 {
 		result[i] = math.Float32frombits(bits)
 	}
 	return result
+}
+
+// --- Full-Text Search (Tier 3) ---
+
+func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, entityID string, limit int) ([]*Memory, error) {
+	return s.SearchFTSWithOptions(ctx, query, entityID, limit, SimilarityOptions{})
+}
+
+func (s *SQLiteStore) SearchFTSWithOptions(ctx context.Context, query string, entityID string, limit int, opts SimilarityOptions) ([]*Memory, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	// Use FTS5 MATCH query
+	sql := `SELECT m.id, m.entity_id, m.agent_id, m.content, m.content_hash, m.embedding,
+		m.memory_type, m.tags, m.importance, m.confidence, m.stability,
+		m.access_count, m.last_accessed_at, m.state,
+		m.created_at, m.updated_at, m.expires_at, m.deleted_at, m.version,
+		m.source, m.session_id, m.extraction_provider, m.extraction_model,
+		m.importance_factors, m.confidence_factors, m.sentiment, m.derived_from,
+		m.team_id, m.visibility
+	FROM memories m
+	JOIN memories_fts fts ON fts.memory_id = m.id
+	WHERE fts.content MATCH ?
+	AND m.entity_id = ?
+	AND m.state IN ('active', 'stale')`
+
+	args := []any{query, entityID}
+
+	if opts.AgentID != "" {
+		sql += ` AND m.agent_id = ?`
+		args = append(args, opts.AgentID)
+	}
+	if opts.VisibilityFor != nil {
+		vc := opts.VisibilityFor
+		if vc.TeamID != "" {
+			sql += ` AND ((m.visibility = 'private' AND m.agent_id = ?) OR (m.visibility = 'team' AND m.team_id = ?) OR (m.visibility = 'global'))`
+			args = append(args, vc.AgentID, vc.TeamID)
+		} else {
+			sql += ` AND ((m.visibility = 'private' AND m.agent_id = ?) OR (m.visibility = 'global'))`
+			args = append(args, vc.AgentID)
+		}
+	}
+
+	sql += ` ORDER BY rank LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("FTS search failed: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMemories(rows)
+}
+
+// --- HNSW Index Management ---
+
+func (s *SQLiteStore) GetHNSWIndexSize() int {
+	return s.index.Len()
+}
+
+func (s *SQLiteStore) GetLowestRankedInHNSW(ctx context.Context, limit int) ([]*Memory, error) {
+	// Get all IDs currently in the HNSW index
+	ids := s.index.IDs()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	memories, err := s.GetMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	if limit > 0 && len(memories) > limit {
+		memories = memories[:limit]
+	}
+
+	return memories, nil
+}
+
+func (s *SQLiteStore) RemoveFromHNSW(id string) error {
+	return s.index.Remove(id)
+}
+
+// --- Storage Metrics ---
+
+func (s *SQLiteStore) GetMemoryCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM memories WHERE state != 'deleted'").Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) GetStorageSizeBytes(ctx context.Context) (int64, error) {
+	var pageCount, pageSize int64
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+		return 0, err
+	}
+	return pageCount * pageSize, nil
 }

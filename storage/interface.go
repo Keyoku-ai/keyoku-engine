@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: BSL-1.1
+// Copyright (c) 2025 Keyoku. All rights reserved.
+
 package storage
 
 import "context"
@@ -111,6 +114,19 @@ type Store interface {
 	// Aggregation & Sampling (for reporting at scale)
 	AggregateStats(ctx context.Context, entityID string) (*AggregatedStats, error)
 	SampleMemories(ctx context.Context, entityID string, limit int) ([]*Memory, error)
+
+	// Full-text search (Tier 3 fallback)
+	SearchFTS(ctx context.Context, query string, entityID string, limit int) ([]*Memory, error)
+	SearchFTSWithOptions(ctx context.Context, query string, entityID string, limit int, opts SimilarityOptions) ([]*Memory, error)
+
+	// HNSW index management (for eviction)
+	GetHNSWIndexSize() int
+	GetLowestRankedInHNSW(ctx context.Context, limit int) ([]*Memory, error)
+	RemoveFromHNSW(id string) error
+
+	// Storage metrics
+	GetStorageSizeBytes(ctx context.Context) (int64, error)
+	GetMemoryCount(ctx context.Context) (int, error)
 
 	// Maintenance
 	Close() error
