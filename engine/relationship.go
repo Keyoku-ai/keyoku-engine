@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // RelationshipDetector detects and extracts relationships between entities.

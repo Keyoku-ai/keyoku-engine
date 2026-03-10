@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // EntityResolver handles entity extraction and resolution.

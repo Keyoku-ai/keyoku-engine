@@ -3,7 +3,7 @@ package keyoku
 import (
 	"context"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // testStore implements storage.Store for root package tests.

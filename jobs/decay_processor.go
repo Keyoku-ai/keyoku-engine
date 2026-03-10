@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/engine"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/engine"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // hasCronTag returns true if the memory's tags contain any cron:* schedule tag.

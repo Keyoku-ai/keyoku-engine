@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // EnhancedRetriever provides advanced memory retrieval with graph awareness.

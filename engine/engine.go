@@ -9,9 +9,9 @@ import (
 	"math"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/llm"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/llm"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // EngineConfig holds configuration for the engine.

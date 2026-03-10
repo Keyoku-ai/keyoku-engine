@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 func TestDetectRelationships_PatternBased(t *testing.T) {

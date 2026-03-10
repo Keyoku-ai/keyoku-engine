@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // PurgeProcessor permanently deletes soft-deleted memories past their retention period.

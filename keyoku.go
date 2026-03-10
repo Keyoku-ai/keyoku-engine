@@ -15,11 +15,11 @@ import (
 	"math"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/engine"
-	"github.com/keyoku-ai/keyoku-embedded/jobs"
-	"github.com/keyoku-ai/keyoku-embedded/llm"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/engine"
+	"github.com/keyoku-ai/keyoku-engine/jobs"
+	"github.com/keyoku-ai/keyoku-engine/llm"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // Re-export commonly used types so users import only the keyoku package.

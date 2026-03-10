@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/vectorindex"
+	"github.com/keyoku-ai/keyoku-engine/vectorindex"
 	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 )

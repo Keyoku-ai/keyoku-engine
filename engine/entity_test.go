@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 func TestResolveEntity_ExactMatch(t *testing.T) {

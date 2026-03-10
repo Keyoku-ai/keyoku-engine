@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 func TestCalculateDecayFactor(t *testing.T) {

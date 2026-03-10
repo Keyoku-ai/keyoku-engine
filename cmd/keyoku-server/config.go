@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"os"
 
-	keyoku "github.com/keyoku-ai/keyoku-embedded"
+	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
 
 // ServerConfig holds configuration for the HTTP sidecar server.

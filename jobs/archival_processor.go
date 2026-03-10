@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // ArchivalProcessor archives stale memories that have been stale for too long.

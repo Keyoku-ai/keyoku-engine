@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/engine"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/engine"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // newTestKeyoku creates a Keyoku with mock store and noop embedder for testing.

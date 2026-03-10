@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/embedder"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/embedder"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // DuplicateDetector handles detection and resolution of duplicate memories.

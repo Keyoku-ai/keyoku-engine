@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"sync"
 
-	keyoku "github.com/keyoku-ai/keyoku-embedded"
+	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
 
 // SSEHub manages SSE client connections and broadcasts keyoku events.

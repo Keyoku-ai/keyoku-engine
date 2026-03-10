@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // newTestKeyokuWithLogger creates a Keyoku with mock store, noop embedder, and logger.

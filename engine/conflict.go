@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/keyoku-ai/keyoku-embedded/llm"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/llm"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // ConflictDetector identifies and resolves conflicts between memories.

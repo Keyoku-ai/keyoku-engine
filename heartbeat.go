@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/llm"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/llm"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // HeartbeatResult contains the result of a HeartbeatCheck.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/keyoku-ai/keyoku-embedded/llm"
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/llm"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // StateManager handles agent state extraction and persistence.

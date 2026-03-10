@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 func newTestGraph(store *mockStore) *GraphEngine {

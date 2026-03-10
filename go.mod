@@ -1,4 +1,4 @@
-module github.com/keyoku-ai/keyoku-embedded
+module github.com/keyoku-ai/keyoku-engine
 
 go 1.24.0
 

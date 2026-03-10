@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 func newTestRetriever(store *mockStore, emb *mockEmbedder) *EnhancedRetriever {

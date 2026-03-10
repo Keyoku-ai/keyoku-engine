@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	keyoku "github.com/keyoku-ai/keyoku-embedded"
+	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
 
 // Handlers wraps the Keyoku instance and provides HTTP handlers.

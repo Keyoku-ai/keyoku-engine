@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	keyoku "github.com/keyoku-ai/keyoku-embedded"
+	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
 
 func main() {
@@ -22,11 +22,11 @@ func main() {
 	dbPath := flag.String("db", "", "override database path")
 	flag.Parse()
 
-	// Sentai session token check — binary only works when launched by sentai
-	if os.Getenv("SENTAI_SESSION_TOKEN") == "" {
-		log.Fatal("keyoku-server requires SENTAI_SESSION_TOKEN to be set.\n" +
-			"This binary is designed to be launched by the Sentai orchestrator.\n" +
-			"Run `sentai run` to start the full stack.")
+	// Session token check — binary only works when launched by a host application
+	if os.Getenv("KEYOKU_SESSION_TOKEN") == "" {
+		log.Fatal("keyoku-server requires KEYOKU_SESSION_TOKEN to be set.\n" +
+			"This binary is designed to be launched by the a host application.\n" +
+			"Set KEYOKU_SESSION_TOKEN to any value to start.")
 	}
 
 	// Load config

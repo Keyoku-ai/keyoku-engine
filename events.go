@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/keyoku-ai/keyoku-embedded/storage"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // EventType represents the type of event emitted by Keyoku.
