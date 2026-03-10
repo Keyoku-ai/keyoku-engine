@@ -74,6 +74,9 @@ type mockStore struct {
 	queryCustomExtractionsFn         func(context.Context, storage.CustomExtractionQuery) ([]*storage.CustomExtraction, error)
 	deleteCustomExtractionFn         func(context.Context, string) error
 	deleteCustomExtractionsBySchemaFn func(context.Context, string) error
+	getHNSWIndexSizeFn               func() int
+	getLowestRankedInHNSWFn          func(int) ([]*storage.Memory, error)
+	removeFromHNSWFn                 func(string) error
 	closeFn                          func() error
 	pingFn                           func(context.Context) error
 }
@@ -478,9 +481,15 @@ func (m *mockStore) AggregateStats(_ context.Context, _ string) (*storage.Aggreg
 func (m *mockStore) SampleMemories(_ context.Context, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, _ int, _ storage.SimilarityOptions) ([]*storage.Memory, error) { return nil, nil }
-func (m *mockStore) GetHNSWIndexSize() int { return 0 }
-func (m *mockStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
-func (m *mockStore) RemoveFromHNSW(_ string) error { return nil }
+func (m *mockStore) GetHNSWIndexSize() int {
+	if m.getHNSWIndexSizeFn != nil { return m.getHNSWIndexSizeFn() }; return 0
+}
+func (m *mockStore) GetLowestRankedInHNSW(_ context.Context, limit int) ([]*storage.Memory, error) {
+	if m.getLowestRankedInHNSWFn != nil { return m.getLowestRankedInHNSWFn(limit) }; return nil, nil
+}
+func (m *mockStore) RemoveFromHNSW(id string) error {
+	if m.removeFromHNSWFn != nil { return m.removeFromHNSWFn(id) }; return nil
+}
 func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *mockStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {

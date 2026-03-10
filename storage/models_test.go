@@ -30,15 +30,15 @@ func TestMemoryType_StabilityDays(t *testing.T) {
 		want    float64
 	}{
 		{TypeIdentity, 365},
-		{TypePreference, 180},
-		{TypeRelationship, 180},
-		{TypeEvent, 60},
-		{TypeActivity, 45},
-		{TypePlan, 30},
-		{TypeContext, 7},
-		{TypeEphemeral, 1},
-		{"UNKNOWN", 60},
-		{"", 60},
+		{TypePreference, 270},
+		{TypeRelationship, 270},
+		{TypeEvent, 120},
+		{TypeActivity, 90},
+		{TypePlan, 60},
+		{TypeContext, 21},
+		{TypeEphemeral, 3},
+		{"UNKNOWN", 90},
+		{"", 90},
 	}
 
 	for _, tt := range tests {

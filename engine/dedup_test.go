@@ -82,7 +82,7 @@ func TestCheckDuplicate_NearDuplicateMerge(t *testing.T) {
 	store := &mockStore{
 		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
 			return []*storage.SimilarityResult{
-				{Memory: existing, Similarity: 0.90},
+				{Memory: existing, Similarity: 0.85},
 			}, nil
 		},
 	}
@@ -226,11 +226,11 @@ func findStr(s, sub string) bool {
 
 func TestDefaultDuplicateConfig(t *testing.T) {
 	cfg := DefaultDuplicateConfig()
-	if cfg.SemanticThreshold != 0.95 {
-		t.Errorf("SemanticThreshold = %v, want 0.95", cfg.SemanticThreshold)
+	if cfg.SemanticThreshold != 0.90 {
+		t.Errorf("SemanticThreshold = %v, want 0.90", cfg.SemanticThreshold)
 	}
-	if cfg.NearDuplicateThreshold != 0.85 {
-		t.Errorf("NearDuplicateThreshold = %v, want 0.85", cfg.NearDuplicateThreshold)
+	if cfg.NearDuplicateThreshold != 0.80 {
+		t.Errorf("NearDuplicateThreshold = %v, want 0.80", cfg.NearDuplicateThreshold)
 	}
 	if !cfg.EnableSemanticDedup {
 		t.Error("EnableSemanticDedup should be true by default")

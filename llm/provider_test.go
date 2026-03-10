@@ -324,7 +324,7 @@ func TestGemini_ExtractState(t *testing.T) {
 func TestOpenAI_ExtractMemories(t *testing.T) {
 	key := getKey(t, "OPENAI_API_KEY")
 
-	p, err := NewOpenAIProvider(key, "gpt-4o-mini")
+	p, err := NewOpenAIProvider(key, "gpt-4o-mini", "")
 	if err != nil {
 		t.Fatalf("NewOpenAIProvider error = %v", err)
 	}
@@ -352,7 +352,7 @@ func TestOpenAI_ExtractMemories(t *testing.T) {
 func TestOpenAI_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "OPENAI_API_KEY")
 
-	p, err := NewOpenAIProvider(key, "gpt-4o-mini")
+	p, err := NewOpenAIProvider(key, "gpt-4o-mini", "")
 	if err != nil {
 		t.Fatalf("NewOpenAIProvider error = %v", err)
 	}
@@ -374,7 +374,7 @@ func TestOpenAI_ConsolidateMemories(t *testing.T) {
 func TestAnthropic_ExtractMemories(t *testing.T) {
 	key := getKey(t, "ANTHROPIC_API_KEY")
 
-	p, err := NewAnthropicProvider(key, "claude-sonnet-4-5-20250929")
+	p, err := NewAnthropicProvider(key, "claude-sonnet-4-5-20250929", "")
 	if err != nil {
 		t.Fatalf("NewAnthropicProvider error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestAnthropic_ExtractMemories(t *testing.T) {
 func TestAnthropic_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "ANTHROPIC_API_KEY")
 
-	p, err := NewAnthropicProvider(key, "claude-sonnet-4-5-20250929")
+	p, err := NewAnthropicProvider(key, "claude-sonnet-4-5-20250929", "")
 	if err != nil {
 		t.Fatalf("NewAnthropicProvider error = %v", err)
 	}

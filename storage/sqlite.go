@@ -331,26 +331,22 @@ func (s *SQLiteStore) migrate() error {
 	// FTS5 virtual table for full-text search (Tier 3 fallback)
 	s.db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 		content,
-		entity_id UNINDEXED,
 		memory_id UNINDEXED,
-		content='memories',
-		content_rowid='rowid'
+		entity_id UNINDEXED
 	)`)
 
 	// FTS triggers to keep index in sync
 	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
-		INSERT INTO memories_fts(rowid, content, entity_id, memory_id)
-		VALUES (new.rowid, new.content, new.entity_id, new.id);
+		INSERT INTO memories_fts(content, memory_id, entity_id)
+		VALUES (new.content, new.id, new.entity_id);
 	END`)
 	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
-		INSERT INTO memories_fts(memories_fts, rowid, content, entity_id, memory_id)
-		VALUES ('delete', old.rowid, old.content, old.entity_id, old.id);
+		DELETE FROM memories_fts WHERE memory_id = old.id;
 	END`)
 	s.db.Exec(`CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF content ON memories BEGIN
-		INSERT INTO memories_fts(memories_fts, rowid, content, entity_id, memory_id)
-		VALUES ('delete', old.rowid, old.content, old.entity_id, old.id);
-		INSERT INTO memories_fts(rowid, content, entity_id, memory_id)
-		VALUES (new.rowid, new.content, new.entity_id, new.id);
+		DELETE FROM memories_fts WHERE memory_id = old.id;
+		INSERT INTO memories_fts(content, memory_id, entity_id)
+		VALUES (new.content, new.id, new.entity_id);
 	END`)
 
 	// Performance indexes for reporting & aggregation
@@ -2592,13 +2588,12 @@ func (s *SQLiteStore) SearchFTSWithOptions(ctx context.Context, query string, en
 	}
 
 	// Use FTS5 MATCH query
-	sql := `SELECT m.id, m.entity_id, m.agent_id, m.content, m.content_hash, m.embedding,
+	sql := `SELECT m.id, m.entity_id, m.agent_id, m.team_id, m.content, m.content_hash, m.embedding,
 		m.memory_type, m.tags, m.importance, m.confidence, m.stability,
-		m.access_count, m.last_accessed_at, m.state,
-		m.created_at, m.updated_at, m.expires_at, m.deleted_at, m.version,
-		m.source, m.session_id, m.extraction_provider, m.extraction_model,
-		m.importance_factors, m.confidence_factors, m.sentiment, m.derived_from,
-		m.team_id, m.visibility
+		m.access_count, m.last_accessed_at, m.state, m.created_at, m.updated_at,
+		m.expires_at, m.deleted_at, m.version, m.source, m.session_id,
+		m.extraction_provider, m.extraction_model, m.importance_factors, m.confidence_factors,
+		m.sentiment, m.derived_from, m.visibility
 	FROM memories m
 	JOIN memories_fts fts ON fts.memory_id = m.id
 	WHERE fts.content MATCH ?
