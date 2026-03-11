@@ -498,6 +498,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 	})
 
 	// Log history
+	//nolint:errcheck // fire-and-forget logging
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  mem.ID,
 		Operation: "create",
@@ -560,6 +561,7 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 		"reason":      update.Reason,
 	})
 
+	//nolint:errcheck // fire-and-forget logging
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  targetMemory.ID,
 		Operation: "update",
@@ -607,6 +609,7 @@ func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, simila
 		"reason":  del.Reason,
 	})
 
+	//nolint:errcheck // fire-and-forget logging
 	e.store.LogHistory(ctx, &storage.HistoryEntry{
 		MemoryID:  targetMemory.ID,
 		Operation: "delete",
@@ -762,12 +765,14 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 	for i, r := range results {
 		ids[i] = r.Memory.ID
 	}
+	//nolint:errcheck // fire-and-forget stats update
 	e.store.UpdateAccessStats(ctx, ids)
 
 	// Spaced repetition: increase stability for accessed memories
 	for _, r := range results {
 		newStability := CalculateNewStabilityWithAccess(r.Memory.Stability, r.Memory.LastAccessedAt, r.Memory.AccessCount)
 		if newStability > r.Memory.Stability {
+			//nolint:errcheck // fire-and-forget stability update
 			e.store.UpdateStability(ctx, r.Memory.ID, newStability)
 		}
 	}
@@ -871,7 +876,7 @@ func (e *Engine) GetSampleMemories(ctx context.Context, entityID string, limit i
 // Close closes the engine and releases resources.
 func (e *Engine) Close() error {
 	if closer, ok := e.provider.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close() //nolint:errcheck
 	}
 	return nil
 }
@@ -923,6 +928,7 @@ func (e *Engine) extractAndStoreEntities(ctx context.Context, ownerEntityID stri
 		}
 
 		if entity != nil {
+			//nolint:errcheck // fire-and-forget mention tracking
 			e.store.CreateEntityMention(ctx, &storage.EntityMention{
 				EntityID:       entity.ID,
 				MemoryID:       mem.ID,
@@ -962,16 +968,19 @@ func (e *Engine) detectAndStoreRelationships(ctx context.Context, ownerEntityID 
 		if existingRel != nil {
 			if rel.Confidence > existingRel.Strength {
 				newStrength := (existingRel.Strength + rel.Confidence) / 2
+				//nolint:errcheck // fire-and-forget relationship update
 				e.store.UpdateRelationship(ctx, existingRel.ID, map[string]any{
 					"strength": newStrength,
 				})
 			}
+			//nolint:errcheck // fire-and-forget evidence tracking
 			e.store.CreateRelationshipEvidence(ctx, &storage.RelationshipEvidence{
 				RelationshipID: existingRel.ID,
 				MemoryID:       mem.ID,
 				EvidenceText:   rel.Evidence,
 				Confidence:     rel.Confidence,
 			})
+			//nolint:errcheck // fire-and-forget evidence count
 			e.store.IncrementRelationshipEvidence(ctx, existingRel.ID)
 			continue
 		}
@@ -992,6 +1001,7 @@ func (e *Engine) detectAndStoreRelationships(ctx context.Context, ownerEntityID 
 			continue
 		}
 
+		//nolint:errcheck // fire-and-forget evidence tracking
 		e.store.CreateRelationshipEvidence(ctx, &storage.RelationshipEvidence{
 			RelationshipID: relationship.ID,
 			MemoryID:       mem.ID,
@@ -1135,6 +1145,7 @@ func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID strin
 			"trigger":        newContent,
 		})
 
+		//nolint:errcheck // fire-and-forget logging
 		e.store.LogHistory(ctx, &storage.HistoryEntry{
 			MemoryID:  sim.Memory.ID,
 			Operation: "importance_reeval",

@@ -16,7 +16,7 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -97,8 +97,8 @@ func TestSQLiteStore_GetMemoriesByIDs(t *testing.T) {
 	mem2 := testMemory("user-1")
 	mem2.Hash = "hash2"
 	mem2.Content = "second memory"
-	s.CreateMemory(ctx, mem1)
-	s.CreateMemory(ctx, mem2)
+	_ = s.CreateMemory(ctx, mem1)
+	_ = s.CreateMemory(ctx, mem2)
 
 	mems, err := s.GetMemoriesByIDs(ctx, []string{mem1.ID, mem2.ID})
 	if err != nil {
@@ -123,7 +123,7 @@ func TestSQLiteStore_UpdateMemory(t *testing.T) {
 	ctx := context.Background()
 
 	mem := testMemory("user-1")
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	newContent := "updated content"
 	newImportance := 0.9
@@ -151,7 +151,7 @@ func TestSQLiteStore_DeleteMemory_Soft(t *testing.T) {
 
 	mem := testMemory("user-1")
 	mem.Embedding = testEncodeEmbedding([]float32{1, 0, 0})
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	if err := s.DeleteMemory(ctx, mem.ID, false); err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestSQLiteStore_DeleteMemory_Hard(t *testing.T) {
 	ctx := context.Background()
 
 	mem := testMemory("user-1")
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	if err := s.DeleteMemory(ctx, mem.ID, true); err != nil {
 		t.Fatal(err)
@@ -195,18 +195,18 @@ func TestSQLiteStore_FindSimilar(t *testing.T) {
 	mem1 := testMemory("user-1")
 	mem1.Hash = "h1"
 	mem1.Embedding = testEncodeEmbedding([]float32{1, 0, 0})
-	s.CreateMemory(ctx, mem1)
+	_ = s.CreateMemory(ctx, mem1)
 
 	mem2 := testMemory("user-1")
 	mem2.Hash = "h2"
 	mem2.Content = "other content"
 	mem2.Embedding = testEncodeEmbedding([]float32{0, 1, 0})
-	s.CreateMemory(ctx, mem2)
+	_ = s.CreateMemory(ctx, mem2)
 
 	mem3 := testMemory("user-2") // different entity
 	mem3.Hash = "h3"
 	mem3.Embedding = testEncodeEmbedding([]float32{0.9, 0.1, 0})
-	s.CreateMemory(ctx, mem3)
+	_ = s.CreateMemory(ctx, mem3)
 
 	results, err := s.FindSimilar(ctx, []float32{1, 0, 0}, "user-1", 10, 0.0)
 	if err != nil {
@@ -228,13 +228,13 @@ func TestSQLiteStore_FindSimilarWithOptions_AgentFilter(t *testing.T) {
 	mem1.Hash = "h1"
 	mem1.AgentID = "agent-a"
 	mem1.Embedding = testEncodeEmbedding([]float32{1, 0, 0})
-	s.CreateMemory(ctx, mem1)
+	_ = s.CreateMemory(ctx, mem1)
 
 	mem2 := testMemory("user-1")
 	mem2.Hash = "h2"
 	mem2.AgentID = "agent-b"
 	mem2.Embedding = testEncodeEmbedding([]float32{0.9, 0.1, 0})
-	s.CreateMemory(ctx, mem2)
+	_ = s.CreateMemory(ctx, mem2)
 
 	results, err := s.FindSimilarWithOptions(ctx, []float32{1, 0, 0}, "user-1", 10, 0.0, SimilarityOptions{AgentID: "agent-a"})
 	if err != nil {
@@ -261,7 +261,7 @@ func TestSQLiteStore_QueryMemories(t *testing.T) {
 		} else {
 			mem.Type = TypePlan
 		}
-		s.CreateMemory(ctx, mem)
+		_ = s.CreateMemory(ctx, mem)
 	}
 
 	// Filter by type
@@ -308,7 +308,7 @@ func TestSQLiteStore_GetRecentMemories(t *testing.T) {
 	ctx := context.Background()
 
 	mem := testMemory("user-1")
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	results, err := s.GetRecentMemories(ctx, "user-1", 24, 10)
 	if err != nil {
@@ -327,7 +327,7 @@ func TestSQLiteStore_FindByHash(t *testing.T) {
 
 	mem := testMemory("user-1")
 	mem.Hash = "unique_hash"
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	found, err := s.FindByHash(ctx, "user-1", "unique_hash")
 	if err != nil {
@@ -357,7 +357,7 @@ func TestSQLiteStore_FindByHashWithAgent(t *testing.T) {
 	mem := testMemory("user-1")
 	mem.Hash = "agent_hash"
 	mem.AgentID = "agent-x"
-	s.CreateMemory(ctx, mem)
+	_ = s.CreateMemory(ctx, mem)
 
 	found, err := s.FindByHashWithAgent(ctx, "user-1", "agent-x", "agent_hash")
 	if err != nil {
