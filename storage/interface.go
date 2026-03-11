@@ -3,7 +3,10 @@
 
 package storage
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store defines the unified storage interface for Keyoku Embedded.
 // Combines core memory, entity, and relationship operations in a single interface
@@ -110,6 +113,13 @@ type Store interface {
 	RemoveTeamMember(ctx context.Context, teamID, agentID string) error
 	GetTeamMembers(ctx context.Context, teamID string) ([]*TeamMember, error)
 	GetTeamForAgent(ctx context.Context, agentID string) (string, error) // returns team_id or ""
+
+	// Heartbeat action tracking
+	RecordHeartbeatAction(ctx context.Context, action *HeartbeatAction) error
+	GetLastHeartbeatAction(ctx context.Context, entityID, agentID, decision string) (*HeartbeatAction, error)
+	GetNudgeCountToday(ctx context.Context, entityID, agentID string) (int, error)
+	CleanupOldHeartbeatActions(ctx context.Context, olderThan time.Duration) error
+	GetMessageHourDistribution(ctx context.Context, entityID string, days int) (map[int]int, error)
 
 	// Aggregation & Sampling (for reporting at scale)
 	AggregateStats(ctx context.Context, entityID string) (*AggregatedStats, error)

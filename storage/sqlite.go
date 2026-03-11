@@ -298,6 +298,22 @@ func (s *SQLiteStore) migrate() error {
 			FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_members_agent ON team_members(agent_id)`,
+
+		// Heartbeat action tracking (cooldown, novelty, nudge decisions)
+		`CREATE TABLE IF NOT EXISTS heartbeat_actions (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			acted_at TEXT NOT NULL DEFAULT (datetime('now')),
+			trigger_category TEXT NOT NULL,
+			signal_fingerprint TEXT NOT NULL,
+			decision TEXT NOT NULL DEFAULT 'act',
+			urgency_tier TEXT NOT NULL,
+			llm_should_act INTEGER,
+			signal_summary TEXT DEFAULT '',
+			total_signals INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hb_actions_entity ON heartbeat_actions(entity_id, agent_id, acted_at DESC)`,
 	}
 
 	for _, stmt := range stmts {
@@ -2675,4 +2691,102 @@ func (s *SQLiteStore) GetStorageSizeBytes(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return pageCount * pageSize, nil
+}
+
+// --- Heartbeat Action Tracking ---
+
+func (s *SQLiteStore) RecordHeartbeatAction(ctx context.Context, action *HeartbeatAction) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if action.ID == "" {
+		action.ID = ulid.Make().String()
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	var llmVal *int
+	if action.LLMShouldAct != nil {
+		v := 0
+		if *action.LLMShouldAct {
+			v = 1
+		}
+		llmVal = &v
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO heartbeat_actions (id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		action.ID, action.EntityID, action.AgentID, now, action.TriggerCategory,
+		action.SignalFingerprint, action.Decision, action.UrgencyTier,
+		llmVal, action.SignalSummary, action.TotalSignals)
+	return err
+}
+
+func (s *SQLiteStore) GetLastHeartbeatAction(ctx context.Context, entityID, agentID, decision string) (*HeartbeatAction, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals
+		FROM heartbeat_actions
+		WHERE entity_id = ? AND agent_id = ? AND decision = ?
+		ORDER BY acted_at DESC LIMIT 1`,
+		entityID, agentID, decision)
+
+	var a HeartbeatAction
+	var actedStr string
+	var llmVal *int
+	err := row.Scan(&a.ID, &a.EntityID, &a.AgentID, &actedStr, &a.TriggerCategory,
+		&a.SignalFingerprint, &a.Decision, &a.UrgencyTier, &llmVal, &a.SignalSummary, &a.TotalSignals)
+	if err != nil {
+		return nil, err
+	}
+	a.ActedAt, _ = time.Parse(time.RFC3339, actedStr)
+	if llmVal != nil {
+		v := *llmVal == 1
+		a.LLMShouldAct = &v
+	}
+	return &a, nil
+}
+
+func (s *SQLiteStore) GetNudgeCountToday(ctx context.Context, entityID, agentID string) (int, error) {
+	// Count nudges in the last 24 hours
+	cutoff := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM heartbeat_actions
+		WHERE entity_id = ? AND agent_id = ? AND trigger_category = 'nudge' AND decision = 'act' AND acted_at > ?`,
+		entityID, agentID, cutoff).Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) CleanupOldHeartbeatActions(ctx context.Context, olderThan time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := time.Now().UTC().Add(-olderThan).Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM heartbeat_actions WHERE acted_at < ?`, cutoff)
+	return err
+}
+
+func (s *SQLiteStore) GetMessageHourDistribution(ctx context.Context, entityID string, days int) (map[int]int, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT created_at FROM session_messages WHERE entity_id = ? AND role = 'user' AND created_at > ?`,
+		entityID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dist := make(map[int]int)
+	for rows.Next() {
+		var createdStr string
+		if err := rows.Scan(&createdStr); err != nil {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, createdStr)
+		if err != nil {
+			continue
+		}
+		dist[t.Hour()]++
+	}
+	return dist, rows.Err()
 }

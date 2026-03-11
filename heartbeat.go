@@ -5,8 +5,12 @@ package keyoku
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/llm"
@@ -37,8 +41,177 @@ type HeartbeatResult struct {
 	ActionItems    []string // All items ordered by priority
 	Urgency        string   // "immediate", "soon", "can_wait"
 
+	// Intelligent heartbeat decision metadata
+	DecisionReason     string // "act", "nudge", "suppress_cooldown", "suppress_stale", "suppress_quiet"
+	HighestUrgencyTier string // "immediate", "elevated", "normal", "low"
+	SignalFingerprint  string // for debugging
+	NudgeContext       string // memory content selected for nudge
+
 	// Team heartbeat fields (populated only in team heartbeat mode)
 	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
+}
+
+// --- Signal Urgency Tiers ---
+
+const (
+	TierImmediate = "immediate" // Scheduled (cron due), Deadlines — 0 cooldown
+	TierElevated  = "elevated"  // Conflicts, Continuity, StaleMonitors — 1h cooldown
+	TierNormal    = "normal"    // PendingWork, GoalProgress, KnowledgeGaps — 2h cooldown
+	TierLow       = "low"       // Decaying, Sentiment, Relationships, Patterns — 4h cooldown
+)
+
+// signalTierMap maps check types to urgency tiers.
+var signalTierMap = map[HeartbeatCheckType]string{
+	CheckScheduled:    TierImmediate,
+	CheckDeadlines:    TierImmediate,
+	CheckConflicts:    TierElevated,
+	CheckContinuity:   TierElevated,
+	CheckStale:        TierElevated,
+	CheckPendingWork:  TierNormal,
+	CheckGoalProgress: TierNormal,
+	CheckKnowledge:    TierNormal,
+	CheckDecaying:     TierLow,
+	CheckSentiment:    TierLow,
+	CheckRelationship: TierLow,
+	CheckPatterns:     TierLow,
+}
+
+// tierPriority for comparison (lower = more urgent).
+var tierPriority = map[string]int{
+	TierImmediate: 0,
+	TierElevated:  1,
+	TierNormal:    2,
+	TierLow:       3,
+}
+
+// HeartbeatParams holds configurable parameters for heartbeat evaluation.
+// Defaults are set per autonomy level; individual fields can be overridden.
+type HeartbeatParams struct {
+	SignalCooldownNormal time.Duration
+	SignalCooldownLow    time.Duration
+	NudgeAfterSilence    time.Duration // 0 = disabled
+	MaxNudgesPerDay      int           // safety cap per 24h
+	NudgeMaxInterval     time.Duration // cap for backoff decay (e.g. 48h)
+}
+
+// DefaultHeartbeatParams returns defaults based on autonomy level.
+func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
+	switch autonomy {
+	case "observe":
+		return HeartbeatParams{
+			SignalCooldownNormal: 4 * time.Hour,
+			SignalCooldownLow:    8 * time.Hour,
+			NudgeAfterSilence:    0, // disabled
+			MaxNudgesPerDay:      0,
+			NudgeMaxInterval: 12 * time.Hour,
+		}
+	case "act":
+		return HeartbeatParams{
+			SignalCooldownNormal: 1 * time.Hour,
+			SignalCooldownLow:    2 * time.Hour,
+			NudgeAfterSilence:    2 * time.Hour,
+			MaxNudgesPerDay:      6,
+			NudgeMaxInterval: 48 * time.Hour,
+		}
+	default: // "suggest"
+		return HeartbeatParams{
+			SignalCooldownNormal: 2 * time.Hour,
+			SignalCooldownLow:    4 * time.Hour,
+			NudgeAfterSilence:    4 * time.Hour,
+			MaxNudgesPerDay:      3,
+			NudgeMaxInterval: 24 * time.Hour,
+		}
+	}
+}
+
+// --- Active Hours Detection ---
+
+// ActiveHours represents the inferred quiet window for an entity.
+type ActiveHours struct {
+	QuietStart int       // UTC hour when quiet period begins
+	QuietEnd   int       // UTC hour when quiet period ends
+	ComputedAt time.Time
+	HasData    bool      // false if insufficient messages to infer
+}
+
+// activeHoursCache stores computed active hours per entity.
+var activeHoursCache = struct {
+	sync.RWMutex
+	m map[string]*ActiveHours
+}{m: make(map[string]*ActiveHours)}
+
+// getActiveHours returns cached active hours or computes them.
+func getActiveHours(ctx context.Context, store storage.Store, entityID string) *ActiveHours {
+	activeHoursCache.RLock()
+	cached, ok := activeHoursCache.m[entityID]
+	activeHoursCache.RUnlock()
+
+	if ok && time.Since(cached.ComputedAt) < 24*time.Hour {
+		return cached
+	}
+
+	ah := computeActiveHours(ctx, store, entityID)
+
+	activeHoursCache.Lock()
+	activeHoursCache.m[entityID] = ah
+	activeHoursCache.Unlock()
+
+	return ah
+}
+
+// computeActiveHours analyzes message timestamps to find quiet hours.
+func computeActiveHours(ctx context.Context, store storage.Store, entityID string) *ActiveHours {
+	dist, err := store.GetMessageHourDistribution(ctx, entityID, 14)
+	if err != nil {
+		return &ActiveHours{ComputedAt: time.Now(), HasData: false}
+	}
+
+	// Need minimum 20 messages for reliable inference
+	total := 0
+	for _, count := range dist {
+		total += count
+	}
+	if total < 20 {
+		return &ActiveHours{ComputedAt: time.Now(), HasData: false}
+	}
+
+	// Find the 6-hour contiguous window with least activity (quiet window)
+	// Use circular sliding window over 24 hours
+	minSum := total + 1
+	bestStart := 0
+	windowSize := 6 // 6 hours of quiet time
+
+	for start := 0; start < 24; start++ {
+		sum := 0
+		for i := 0; i < windowSize; i++ {
+			h := (start + i) % 24
+			sum += dist[h]
+		}
+		if sum < minSum {
+			minSum = sum
+			bestStart = start
+		}
+	}
+
+	return &ActiveHours{
+		QuietStart: bestStart,
+		QuietEnd:   (bestStart + windowSize) % 24,
+		ComputedAt: time.Now(),
+		HasData:    true,
+	}
+}
+
+// isQuietHour checks if the current time falls within the quiet window.
+func (ah *ActiveHours) isQuietHour() bool {
+	if !ah.HasData {
+		return false // not enough data, assume always active
+	}
+	hour := time.Now().UTC().Hour()
+	if ah.QuietStart < ah.QuietEnd {
+		return hour >= ah.QuietStart && hour < ah.QuietEnd
+	}
+	// Wraps midnight (e.g., 22:00 - 06:00)
+	return hour >= ah.QuietStart || hour < ah.QuietEnd
 }
 
 // GoalProgressItem tracks a plan's progress based on related activity memories.
@@ -115,6 +288,10 @@ type heartbeatConfig struct {
 	llmProvider    llm.Provider
 	agentContext   string
 	entityContext  string
+
+	// Intelligent heartbeat
+	autonomy        string           // "observe", "suggest", "act"
+	heartbeatParams *HeartbeatParams // optional overrides
 }
 
 // HeartbeatCheckType represents a specific check to run.
@@ -180,6 +357,16 @@ func WithTeamHeartbeat(teamID string) HeartbeatOption {
 		c.teamID = teamID
 		c.teamHeartbeat = true
 	}
+}
+
+// WithAutonomy sets the autonomy level for heartbeat evaluation.
+func WithAutonomy(autonomy string) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.autonomy = autonomy }
+}
+
+// WithHeartbeatParams sets optional parameter overrides for heartbeat evaluation.
+func WithHeartbeatParams(params *HeartbeatParams) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.heartbeatParams = params }
 }
 
 // WithLLMPrioritization enables LLM-powered action prioritization on heartbeat results.
@@ -670,41 +857,364 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		result.ByAgent = buildByAgentAttribution(result)
 	}
 
-	// Determine if action is needed
-	result.ShouldAct = len(result.PendingWork) > 0 ||
-		len(result.Deadlines) > 0 ||
-		len(result.Scheduled) > 0 ||
-		len(result.Decaying) > 0 ||
-		len(result.Conflicts) > 0 ||
-		len(result.StaleMonitors) > 0 ||
-		len(result.GoalProgress) > 0 ||
-		result.Continuity != nil ||
-		result.Sentiment != nil ||
-		len(result.Relationships) > 0 ||
-		len(result.KnowledgeGaps) > 0 ||
-		len(result.Patterns) > 0
+	// Build summary regardless of decision (used by LLM analysis if enabled)
+	result.Summary = buildSummary(result)
 
-	// Build summary if action is needed
-	if result.ShouldAct {
-		result.Summary = buildSummary(result)
+	// Intelligent ShouldAct evaluation — replaces naive OR
+	k.evaluateShouldAct(ctx, entityID, cfg, result)
 
-		// LLM prioritization (opt-in, only when there's something to prioritize)
-		if cfg.llmProvider != nil && result.Summary != "" {
-			priorityResp, err := cfg.llmProvider.PrioritizeActions(ctx, llm.ActionPriorityRequest{
-				Summary:       result.Summary,
-				AgentContext:  cfg.agentContext,
-				EntityContext: cfg.entityContext,
-			})
-			if err == nil && priorityResp != nil {
-				result.PriorityAction = priorityResp.PriorityAction
-				result.ActionItems = priorityResp.ActionItems
-				result.Urgency = priorityResp.Urgency
-			}
-			// LLM failure is non-fatal — heartbeat still returns local results
+	return result, nil
+}
+
+// evaluateShouldAct determines whether the heartbeat should trigger action.
+// Implements cooldown, novelty, active hours, and nudge protocol.
+func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) {
+	agentID := cfg.agentID
+	if agentID == "" {
+		agentID = "default"
+	}
+
+	// Determine autonomy from config (will be overridden by handler if set in request)
+	autonomy := "suggest"
+	if cfg.autonomy != "" {
+		autonomy = cfg.autonomy
+	}
+	params := DefaultHeartbeatParams(autonomy)
+	// Apply overrides if set
+	if cfg.heartbeatParams != nil {
+		p := cfg.heartbeatParams
+		if p.SignalCooldownNormal > 0 {
+			params.SignalCooldownNormal = p.SignalCooldownNormal
+		}
+		if p.SignalCooldownLow > 0 {
+			params.SignalCooldownLow = p.SignalCooldownLow
+		}
+		if p.NudgeAfterSilence > 0 {
+			params.NudgeAfterSilence = p.NudgeAfterSilence
+		}
+		if p.MaxNudgesPerDay > 0 {
+			params.MaxNudgesPerDay = p.MaxNudgesPerDay
+		}
+		if p.NudgeMaxInterval > 0 {
+			params.NudgeMaxInterval = p.NudgeMaxInterval
 		}
 	}
 
-	return result, nil
+	// Cleanup old records (fire-and-forget, 7 days)
+	_ = k.store.CleanupOldHeartbeatActions(ctx, 7*24*time.Hour)
+
+	// 1. Check active hours — suppress if in quiet window
+	ah := getActiveHours(ctx, k.store, entityID)
+	if ah.isQuietHour() {
+		// Immediate tier bypasses quiet hours
+		hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
+		if !hasImmediate {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_quiet"
+			k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_quiet", TierLow, 0)
+			return
+		}
+	}
+
+	// 2. Classify active signals and find highest urgency tier
+	activeSignals := k.classifyActiveSignals(result)
+	if len(activeSignals) == 0 {
+		// No signals — try nudge protocol
+		k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
+		return
+	}
+
+	highestTier := TierLow
+	for _, tier := range activeSignals {
+		if tierPriority[tier] < tierPriority[highestTier] {
+			highestTier = tier
+		}
+	}
+	result.HighestUrgencyTier = highestTier
+
+	// 3. Compute signal fingerprint
+	fingerprint := k.computeSignalFingerprint(result)
+	result.SignalFingerprint = fingerprint
+
+	totalSignals := len(activeSignals)
+
+	// 4. Get last "act" decision
+	lastAct, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
+
+	// 5. Immediate tier always passes (cron, deadlines)
+	if highestTier == TierImmediate {
+		result.ShouldAct = true
+		result.DecisionReason = "act"
+		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "act", highestTier, totalSignals)
+
+		// Still run LLM prioritization if available
+		k.runLLMPrioritization(ctx, cfg, result)
+		return
+	}
+
+	// 6. Cooldown check
+	if err == nil && lastAct != nil {
+		cooldown := params.SignalCooldownNormal
+		if highestTier == TierLow {
+			cooldown = params.SignalCooldownLow
+		} else if highestTier == TierElevated {
+			cooldown = time.Hour // elevated always 1h
+		}
+
+		if time.Since(lastAct.ActedAt) < cooldown {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_cooldown"
+			k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_cooldown", highestTier, totalSignals)
+			return
+		}
+	}
+
+	// 7. Novelty check — same fingerprint means nothing changed
+	if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
+		result.ShouldAct = false
+		result.DecisionReason = "suppress_stale"
+		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_stale", highestTier, totalSignals)
+		return
+	}
+
+	// 8. Passed all checks — act
+	result.ShouldAct = true
+	result.DecisionReason = "act"
+	k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "act", highestTier, totalSignals)
+
+	// LLM prioritization
+	k.runLLMPrioritization(ctx, cfg, result)
+}
+
+// evaluateNudge implements the nudge protocol for silence periods.
+func (k *Keyoku) evaluateNudge(ctx context.Context, entityID, agentID, autonomy string, params HeartbeatParams, result *HeartbeatResult) {
+	// Observe mode never nudges
+	if autonomy == "observe" || params.NudgeAfterSilence == 0 {
+		result.ShouldAct = false
+		result.DecisionReason = "no_signals"
+		return
+	}
+
+	// Get time since last user message
+	recentMsgs, err := k.store.GetRecentSessionMessages(ctx, entityID, 1)
+	if err != nil || len(recentMsgs) == 0 {
+		result.ShouldAct = false
+		result.DecisionReason = "no_signals"
+		return
+	}
+
+	silence := time.Since(recentMsgs[0].CreatedAt)
+
+	// Not enough silence for a nudge yet
+	if silence < params.NudgeAfterSilence {
+		result.ShouldAct = false
+		result.DecisionReason = "no_signals"
+		return
+	}
+
+	// Exponential backoff: each consecutive nudge doubles the required interval.
+	// 1st nudge: NudgeAfterSilence (e.g. 2h)
+	// 2nd: 4h after last nudge, 3rd: 8h, 4th: 16h, ... capped at NudgeMaxInterval
+	nudgeCount, err := k.store.GetNudgeCountToday(ctx, entityID, agentID)
+	if err != nil {
+		result.ShouldAct = false
+		result.DecisionReason = "no_signals"
+		return
+	}
+
+	// Safety cap on daily nudges
+	if params.MaxNudgesPerDay > 0 && nudgeCount >= params.MaxNudgesPerDay {
+		result.ShouldAct = false
+		result.DecisionReason = "suppress_nudge_cap"
+		return
+	}
+
+	// Compute backoff interval: base * 2^(consecutive nudges)
+	// Use nudgeCount as proxy for consecutive nudges (resets daily)
+	requiredInterval := params.NudgeAfterSilence
+	for i := 0; i < nudgeCount; i++ {
+		requiredInterval *= 2
+		if requiredInterval > params.NudgeMaxInterval {
+			requiredInterval = params.NudgeMaxInterval
+			break
+		}
+	}
+
+	// Check if enough time since last nudge (not last user message)
+	lastNudge, err := k.store.GetLastHeartbeatAction(ctx, entityID, agentID, "act")
+	if err == nil && lastNudge != nil && lastNudge.TriggerCategory == "nudge" {
+		sinceLastNudge := time.Since(lastNudge.ActedAt)
+		if sinceLastNudge < requiredInterval {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_nudge_backoff"
+			return
+		}
+	}
+
+	// Check active hours for nudges too
+	ah := getActiveHours(ctx, k.store, entityID)
+	if ah.isQuietHour() {
+		result.ShouldAct = false
+		result.DecisionReason = "suppress_quiet"
+		return
+	}
+
+	// Find novel memory content for the nudge
+	nudgeContent := k.findNudgeContent(ctx, entityID, agentID)
+	if nudgeContent == "" {
+		result.ShouldAct = false
+		result.DecisionReason = "no_signals"
+		return
+	}
+
+	result.ShouldAct = true
+	result.DecisionReason = "nudge"
+	result.NudgeContext = nudgeContent
+	k.recordDecision(ctx, entityID, agentID, "nudge", "", "act", TierNormal, 0)
+}
+
+// findNudgeContent selects a meaningful memory to reference in a nudge.
+func (k *Keyoku) findNudgeContent(ctx context.Context, entityID, agentID string) string {
+	// Look for high-importance memories with low access count (unsurfaced)
+	memories, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:   entityID,
+		AgentID:    agentID,
+		States:     []storage.MemoryState{storage.StateActive},
+		Limit:      20,
+		OrderBy:    "importance",
+		Descending: true,
+	})
+	if err != nil || len(memories) == 0 {
+		return ""
+	}
+
+	// Prefer memories that haven't been surfaced much
+	for _, m := range memories {
+		if m.AccessCount < 3 && m.Importance >= 0.6 {
+			return m.Content
+		}
+	}
+
+	// Fall back to most important
+	return memories[0].Content
+}
+
+// classifyActiveSignals returns a map of check type → tier for signals that are present.
+func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatCheckType]string {
+	active := make(map[HeartbeatCheckType]string)
+
+	if len(result.Scheduled) > 0 {
+		active[CheckScheduled] = signalTierMap[CheckScheduled]
+	}
+	if len(result.Deadlines) > 0 {
+		active[CheckDeadlines] = signalTierMap[CheckDeadlines]
+	}
+	if len(result.Conflicts) > 0 {
+		active[CheckConflicts] = signalTierMap[CheckConflicts]
+	}
+	if result.Continuity != nil && result.Continuity.WasInterrupted {
+		active[CheckContinuity] = signalTierMap[CheckContinuity]
+	}
+	if len(result.StaleMonitors) > 0 {
+		active[CheckStale] = signalTierMap[CheckStale]
+	}
+	if len(result.PendingWork) > 0 {
+		active[CheckPendingWork] = signalTierMap[CheckPendingWork]
+	}
+	if len(result.GoalProgress) > 0 {
+		active[CheckGoalProgress] = signalTierMap[CheckGoalProgress]
+	}
+	if len(result.KnowledgeGaps) > 0 {
+		active[CheckKnowledge] = signalTierMap[CheckKnowledge]
+	}
+	if len(result.Decaying) > 0 {
+		active[CheckDecaying] = signalTierMap[CheckDecaying]
+	}
+	if result.Sentiment != nil {
+		active[CheckSentiment] = signalTierMap[CheckSentiment]
+	}
+	if len(result.Relationships) > 0 {
+		active[CheckRelationship] = signalTierMap[CheckRelationship]
+	}
+	if len(result.Patterns) > 0 {
+		active[CheckPatterns] = signalTierMap[CheckPatterns]
+	}
+
+	return active
+}
+
+// computeSignalFingerprint creates a SHA256 hash of the current signal state.
+func (k *Keyoku) computeSignalFingerprint(result *HeartbeatResult) string {
+	var parts []string
+
+	// Collect memory IDs from each signal category
+	for _, m := range result.Scheduled {
+		parts = append(parts, "sched:"+m.ID)
+	}
+	for _, m := range result.Deadlines {
+		parts = append(parts, "dead:"+m.ID)
+	}
+	for _, m := range result.PendingWork {
+		parts = append(parts, "work:"+m.ID)
+	}
+	for _, c := range result.Conflicts {
+		parts = append(parts, "conf:"+c.MemoryA.ID)
+	}
+	for _, m := range result.StaleMonitors {
+		parts = append(parts, "stale:"+m.ID)
+	}
+	for _, m := range result.Decaying {
+		parts = append(parts, "decay:"+m.ID)
+	}
+	for _, g := range result.GoalProgress {
+		parts = append(parts, fmt.Sprintf("goal:%s:%s", g.Plan.ID, g.Status))
+	}
+	if result.Continuity != nil && result.Continuity.WasInterrupted {
+		parts = append(parts, "continuity:interrupted")
+	}
+	if result.Sentiment != nil {
+		parts = append(parts, fmt.Sprintf("sentiment:%s", result.Sentiment.Direction))
+	}
+	for _, r := range result.Relationships {
+		parts = append(parts, fmt.Sprintf("rel:%s:%d", r.Entity.ID, r.DaysSilent))
+	}
+	for _, g := range result.KnowledgeGaps {
+		parts = append(parts, "gap:"+g.Question[:min(len(g.Question), 50)])
+	}
+
+	sort.Strings(parts)
+	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(h[:8]) // first 8 bytes = 16 hex chars, enough for uniqueness
+}
+
+// recordDecision persists a heartbeat decision for tracking.
+func (k *Keyoku) recordDecision(ctx context.Context, entityID, agentID, triggerCategory, fingerprint, decision, tier string, totalSignals int) {
+	_ = k.store.RecordHeartbeatAction(ctx, &storage.HeartbeatAction{
+		EntityID:          entityID,
+		AgentID:           agentID,
+		TriggerCategory:   triggerCategory,
+		SignalFingerprint: fingerprint,
+		Decision:          decision,
+		UrgencyTier:       tier,
+		TotalSignals:      totalSignals,
+	})
+}
+
+// runLLMPrioritization runs the opt-in LLM prioritization on heartbeat results.
+func (k *Keyoku) runLLMPrioritization(ctx context.Context, cfg *heartbeatConfig, result *HeartbeatResult) {
+	if cfg.llmProvider == nil || result.Summary == "" {
+		return
+	}
+	priorityResp, err := cfg.llmProvider.PrioritizeActions(ctx, llm.ActionPriorityRequest{
+		Summary:       result.Summary,
+		AgentContext:  cfg.agentContext,
+		EntityContext: cfg.entityContext,
+	})
+	if err == nil && priorityResp != nil {
+		result.PriorityAction = priorityResp.PriorityAction
+		result.ActionItems = priorityResp.ActionItems
+		result.Urgency = priorityResp.Urgency
+	}
 }
 
 // --- helpers ---

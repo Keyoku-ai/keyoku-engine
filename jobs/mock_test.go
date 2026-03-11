@@ -277,6 +277,11 @@ func (m *mockStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, 
 func (m *mockStore) GetHNSWIndexSize() int { return 0 }
 func (m *mockStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *mockStore) RemoveFromHNSW(_ string) error { return nil }
+func (m *mockStore) RecordHeartbeatAction(_ context.Context, _ *storage.HeartbeatAction) error { return nil }
+func (m *mockStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*storage.HeartbeatAction, error) { return nil, nil }
+func (m *mockStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
+func (m *mockStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
+func (m *mockStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
 func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *mockStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {

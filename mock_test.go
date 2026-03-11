@@ -5,6 +5,7 @@ package keyoku
 
 import (
 	"context"
+	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
@@ -275,6 +276,11 @@ func (m *testStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, 
 func (m *testStore) GetHNSWIndexSize() int { return 0 }
 func (m *testStore) GetLowestRankedInHNSW(_ context.Context, _ int) ([]*storage.Memory, error) { return nil, nil }
 func (m *testStore) RemoveFromHNSW(_ string) error { return nil }
+func (m *testStore) RecordHeartbeatAction(_ context.Context, _ *storage.HeartbeatAction) error { return nil }
+func (m *testStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*storage.HeartbeatAction, error) { return nil, nil }
+func (m *testStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
+func (m *testStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
+func (m *testStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
 func (m *testStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
 func (m *testStore) GetMemoryCount(_ context.Context) (int, error) { return 0, nil }
 func (m *testStore) Close() error {

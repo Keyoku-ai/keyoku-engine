@@ -126,6 +126,13 @@ type heartbeatContextRequest struct {
 	Analyze         bool    `json:"analyze,omitempty"`           // Request LLM analysis of context
 	ActivitySummary string  `json:"activity_summary,omitempty"`  // Current conversation activity for LLM context
 	Autonomy        string  `json:"autonomy,omitempty"`          // "observe", "suggest", "act" (default: "suggest")
+
+	// Optional parameter overrides (defaults come from autonomy level)
+	NudgeAfterSilence    string `json:"nudge_after_silence,omitempty"`      // e.g. "4h"
+	MaxNudgesPerDay      int    `json:"max_nudges_per_day,omitempty"`
+	NudgeMaxInterval string `json:"nudge_max_interval,omitempty"`  // e.g. "48h" — cap for backoff decay
+	SignalCooldownNormal string `json:"signal_cooldown_normal,omitempty"`   // e.g. "2h"
+	SignalCooldownLow    string `json:"signal_cooldown_low,omitempty"`      // e.g. "4h"
 }
 
 type heartbeatAnalysisJSON struct {
@@ -189,6 +196,11 @@ type heartbeatContextResponse struct {
 	RelevantMemories []searchResultItem      `json:"relevant_memories"`
 	Summary          string                  `json:"summary"`
 	Analysis         *heartbeatAnalysisJSON  `json:"analysis,omitempty"`
+
+	// Decision metadata
+	DecisionReason     string `json:"decision_reason,omitempty"`      // "act", "nudge", "suppress_cooldown", "suppress_stale", "suppress_quiet", "no_signals"
+	HighestUrgencyTier string `json:"highest_urgency_tier,omitempty"` // "immediate", "elevated", "normal", "low"
+	NudgeContext       string `json:"nudge_context,omitempty"`        // memory content for nudge
 
 	// Extended signals
 	GoalProgress       []goalProgressJSON      `json:"goal_progress,omitempty"`
@@ -474,6 +486,48 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		hbOpts = append(hbOpts, keyoku.WithTeamHeartbeat(req.TeamID))
 	}
 
+	// Pass autonomy level for intelligent ShouldAct evaluation
+	autonomy := req.Autonomy
+	if autonomy == "" {
+		autonomy = "suggest"
+	}
+	hbOpts = append(hbOpts, keyoku.WithAutonomy(autonomy))
+
+	// Build optional parameter overrides
+	var params keyoku.HeartbeatParams
+	hasOverrides := false
+	if req.SignalCooldownNormal != "" {
+		if d, err := time.ParseDuration(req.SignalCooldownNormal); err == nil {
+			params.SignalCooldownNormal = d
+			hasOverrides = true
+		}
+	}
+	if req.SignalCooldownLow != "" {
+		if d, err := time.ParseDuration(req.SignalCooldownLow); err == nil {
+			params.SignalCooldownLow = d
+			hasOverrides = true
+		}
+	}
+	if req.NudgeAfterSilence != "" {
+		if d, err := time.ParseDuration(req.NudgeAfterSilence); err == nil {
+			params.NudgeAfterSilence = d
+			hasOverrides = true
+		}
+	}
+	if req.MaxNudgesPerDay > 0 {
+		params.MaxNudgesPerDay = req.MaxNudgesPerDay
+		hasOverrides = true
+	}
+	if req.NudgeMaxInterval != "" {
+		if d, err := time.ParseDuration(req.NudgeMaxInterval); err == nil {
+			params.NudgeMaxInterval = d
+			hasOverrides = true
+		}
+	}
+	if hasOverrides {
+		hbOpts = append(hbOpts, keyoku.WithHeartbeatParams(&params))
+	}
+
 	hbResult, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, hbOpts...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "heartbeat check failed: "+err.Error())
@@ -514,10 +568,11 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	shouldAct := hbResult.ShouldAct || len(relevantMemories) > 0
-
 	resp := heartbeatContextResponse{
-		ShouldAct:        shouldAct,
+		ShouldAct:          hbResult.ShouldAct,
+		DecisionReason:     hbResult.DecisionReason,
+		HighestUrgencyTier: hbResult.HighestUrgencyTier,
+		NudgeContext:       hbResult.NudgeContext,
 		Scheduled:        toMemoryJSONSlice(hbResult.Scheduled),
 		Deadlines:        toMemoryJSONSlice(hbResult.Deadlines),
 		PendingWork:      toMemoryJSONSlice(hbResult.PendingWork),
@@ -678,8 +733,11 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 					Autonomy:           analysisResult.Autonomy,
 					UserFacing:         analysisResult.UserFacing,
 				}
-				// Override should_act with LLM's determination
-				resp.ShouldAct = analysisResult.ShouldAct
+				// LLM can only suppress should_act (gate), never promote it
+				if resp.ShouldAct && !analysisResult.ShouldAct {
+					resp.ShouldAct = false
+					resp.DecisionReason = "suppress_llm"
+				}
 			}
 			// LLM failure is non-fatal — raw signals still returned
 		}

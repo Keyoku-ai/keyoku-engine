@@ -400,6 +400,21 @@ type CustomExtractionQuery struct {
 	Offset   int
 }
 
+// HeartbeatAction records a heartbeat decision for cooldown/novelty tracking.
+type HeartbeatAction struct {
+	ID                string    `db:"id"`
+	EntityID          string    `db:"entity_id"`
+	AgentID           string    `db:"agent_id"`
+	ActedAt           time.Time `db:"acted_at"`
+	TriggerCategory   string    `db:"trigger_category"`    // "signal", "nudge", "cron", "deadline"
+	SignalFingerprint string    `db:"signal_fingerprint"`
+	Decision          string    `db:"decision"`            // "act", "suppress_cooldown", "suppress_stale", "suppress_quiet"
+	UrgencyTier       string    `db:"urgency_tier"`
+	LLMShouldAct      *bool    `db:"llm_should_act"`
+	SignalSummary     string    `db:"signal_summary"`
+	TotalSignals      int       `db:"total_signals"`
+}
+
 // AgentState represents a persistent state for an agent workflow.
 type AgentState struct {
 	ID              string         `db:"id"`
