@@ -172,48 +172,44 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
 ## Architecture
 
-```mermaid
-block-beta
-  columns 1
-
-  block:server["keyoku-server (HTTP + SSE layer)"]
-    columns 3
-
-    block:core["Keyoku Core"]
-      columns 3
-      Remember["Remember\nExtract"] Search["Search\nTiered"] Heartbeat["Heartbeat\nZero-Token"]
-    end
-
-    block:engine["Engine Layer"]
-      columns 1
-      e1["dedup · conflict · entity · decay · graph · ranker · scorer · retrieval"]
-    end
-
-    block:storage["Storage (SQLite)"]
-      columns 1
-      s1["memories · entities · relationships · schemas · agent_state · teams"]
-    end
-
-    block:tiers
-      columns 3
-      LRU["LRU\nTier 1"] HNSW["HNSW Vector\nTier 2"] FTS["FTS (SQL)\nTier 3"]
-    end
-
-    block:jobs["Background Jobs"]
-      columns 1
-      j1["decay · consolidation · archival · purge · eviction"]
-    end
-  end
-
-  block:external
-    columns 2
-    LLM["LLM\nExtract"] Embedder["Embedder\nVectors"]
-  end
-
-  core --> engine
-  engine --> storage
-  storage --> tiers
-  server --> external
+```
+┌─────────────────────────────────────────────────┐
+│              keyoku-server (HTTP + SSE)          │
+│                                                  │
+│  ┌────────────┐ ┌──────────┐ ┌───────────────┐  │
+│  │  Remember  │ │  Search  │ │   Heartbeat   │  │
+│  │  Extract   │ │  Tiered  │ │  Zero-Token   │  │
+│  └─────┬──────┘ └────┬─────┘ └──────┬────────┘  │
+│        └──────────────┼──────────────┘           │
+│                       ▼                          │
+│  ┌───────────────────────────────────────────┐   │
+│  │              Engine Layer                 │   │
+│  │  dedup · conflict · entity · decay        │   │
+│  │  graph · ranker · scorer · retrieval      │   │
+│  └─────────────────┬─────────────────────────┘   │
+│                    ▼                             │
+│  ┌───────────────────────────────────────────┐   │
+│  │           Storage (SQLite WAL)            │   │
+│  │  memories · entities · relationships      │   │
+│  └──────┬──────────┬──────────────┬──────────┘   │
+│         ▼          ▼              ▼              │
+│  ┌──────────┐ ┌──────────┐ ┌───────────┐       │
+│  │ LRU Hot  │ │  HNSW    │ │ FTS (SQL) │       │
+│  │  Cache   │ │  Vector  │ │  Tier 3   │       │
+│  │  Tier 1  │ │  Tier 2  │ │           │       │
+│  └──────────┘ └──────────┘ └───────────┘       │
+│                                                  │
+│  ┌───────────────────────────────────────────┐   │
+│  │           Background Jobs                 │   │
+│  │  decay · consolidation · archival         │   │
+│  │  purge · eviction                         │   │
+│  └───────────────────────────────────────────┘   │
+└────────────────┬──────────────┬──────────────────┘
+                 │              │
+          ┌──────▼──────┐ ┌────▼─────┐
+          │  LLM        │ │ Embedder │
+          │  Extract    │ │ Vectors  │
+          └─────────────┘ └──────────┘
 ```
 
 ## LLM Providers
