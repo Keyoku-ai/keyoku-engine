@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="220" viewBox="0 0 800 220">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f8f7ff;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#f0edff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f5f3ff;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <style>
+    .orb1 { animation: float1 6s ease-in-out infinite; }
+    .orb2 { animation: float2 8s ease-in-out infinite; }
+    .orb3 { animation: float3 7s ease-in-out infinite; }
+    .particle { animation: drift 12s linear infinite; }
+    @keyframes float1 {
+      0%, 100% { transform: translate(0, 0); opacity: 0.08; }
+      50% { transform: translate(10px, -8px); opacity: 0.14; }
+    }
+    @keyframes float2 {
+      0%, 100% { transform: translate(0, 0); opacity: 0.06; }
+      50% { transform: translate(-15px, 5px); opacity: 0.12; }
+    }
+    @keyframes float3 {
+      0%, 100% { transform: translate(0, 0); opacity: 0.07; }
+      50% { transform: translate(8px, 10px); opacity: 0.13; }
+    }
+    @keyframes drift {
+      0% { transform: translateX(-40px); opacity: 0; }
+      10% { opacity: 0.4; }
+      90% { opacity: 0.4; }
+      100% { transform: translateX(840px); opacity: 0; }
+    }
+  </style>
+
+  <!-- Background -->
+  <rect width="800" height="220" rx="16" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="799" height="219" rx="16" fill="none" stroke="#e0d9f6" stroke-width="1"/>
+
+  <!-- Glow bar -->
+  <rect x="0" y="216" width="800" height="4" rx="2" fill="url(#accent)" opacity="0.5"/>
+
+  <!-- Floating orbs -->
+  <circle class="orb1" cx="120" cy="60" r="80" fill="#6366f1" opacity="0.08"/>
+  <circle class="orb2" cx="680" cy="150" r="100" fill="#8b5cf6" opacity="0.06"/>
+  <circle class="orb3" cx="400" cy="180" r="60" fill="#a78bfa" opacity="0.07"/>
+
+  <!-- Grid dots -->
+  <g opacity="0.1">
+    <circle cx="50" cy="30" r="1" fill="#6366f1"/><circle cx="100" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="150" cy="30" r="1" fill="#6366f1"/><circle cx="200" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="250" cy="30" r="1" fill="#6366f1"/><circle cx="300" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="350" cy="30" r="1" fill="#6366f1"/><circle cx="400" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="450" cy="30" r="1" fill="#6366f1"/><circle cx="500" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="550" cy="30" r="1" fill="#6366f1"/><circle cx="600" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="650" cy="30" r="1" fill="#6366f1"/><circle cx="700" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="750" cy="30" r="1" fill="#6366f1"/>
+    <circle cx="50" cy="190" r="1" fill="#6366f1"/><circle cx="100" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="150" cy="190" r="1" fill="#6366f1"/><circle cx="200" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="250" cy="190" r="1" fill="#6366f1"/><circle cx="300" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="350" cy="190" r="1" fill="#6366f1"/><circle cx="400" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="450" cy="190" r="1" fill="#6366f1"/><circle cx="500" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="550" cy="190" r="1" fill="#6366f1"/><circle cx="600" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="650" cy="190" r="1" fill="#6366f1"/><circle cx="700" cy="190" r="1" fill="#6366f1"/>
+    <circle cx="750" cy="190" r="1" fill="#6366f1"/>
+  </g>
+
+  <!-- Drifting particles -->
+  <circle class="particle" cx="0" cy="70" r="1.5" fill="#6366f1" opacity="0"/>
+  <circle class="particle" cx="0" cy="140" r="1" fill="#8b5cf6" opacity="0" style="animation-delay: 4s"/>
+  <circle class="particle" cx="0" cy="100" r="1.2" fill="#4f46e5" opacity="0" style="animation-delay: 8s"/>
+
+  <!-- Memory icon (brain-circuit) -->
+  <g transform="translate(290, 55)" opacity="0.6">
+    <circle cx="0" cy="0" r="4" fill="#6366f1"/>
+    <circle cx="20" cy="-15" r="3" fill="#818cf8"/>
+    <circle cx="-15" cy="15" r="3" fill="#818cf8"/>
+    <line x1="0" y1="0" x2="20" y2="-15" stroke="#6366f1" stroke-width="1" opacity="0.4"/>
+    <line x1="0" y1="0" x2="-15" y2="15" stroke="#6366f1" stroke-width="1" opacity="0.4"/>
+  </g>
+
+  <!-- Title -->
+  <text x="400" y="95" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, monospace"
+        font-size="46" font-weight="700" fill="#1e1b4b" text-anchor="middle" letter-spacing="-1">
+    keyoku-engine
+  </text>
+
+  <!-- Tagline -->
+  <text x="400" y="130" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
+        font-size="18" fill="#4338ca" text-anchor="middle" letter-spacing="0.5" opacity="0.7">
+    Persistent AI Memory Engine
+  </text>
+
+  <!-- Subtitle pills -->
+  <g transform="translate(400, 160)" text-anchor="middle">
+    <rect x="-185" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.1"/>
+    <text x="-145" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#4338ca">Go</text>
+
+    <rect x="-85" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.1"/>
+    <text x="-45" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#4338ca">SQLite</text>
+
+    <rect x="15" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.1"/>
+    <text x="55" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#4338ca">HNSW</text>
+
+    <rect x="115" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.1"/>
+    <text x="155" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#4338ca">Vector</text>
+  </g>
+</svg>

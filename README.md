@@ -1,24 +1,69 @@
-# Keyoku Engine
+<div align="center">
 
-Intelligent memory engine for AI agents. Extract, store, search, decay, and consolidate memories — all locally with SQLite and in-process vector search. No external databases required.
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/banner-light.svg">
+    <img alt="keyoku-engine" src="assets/banner-light.svg" width="800">
+  </picture>
 
-## Features
+  <p>
+    <strong>Intelligent memory engine for AI agents.</strong><br>
+    <sub>Extract, store, search, decay, and consolidate memories — all locally with SQLite and in-process vector search.</sub>
+  </p>
 
-- **Memory extraction** — LLM-powered structured extraction from conversations (OpenAI, Anthropic, Gemini)
-- **Vector search** — In-process HNSW index with OpenAI embeddings (or custom endpoint)
-- **Tiered retrieval** — Hot LRU cache → HNSW vector → FTS fallback for scale
-- **Lifecycle management** — Ebbinghaus decay, consolidation, archival, and purge via background jobs
-- **Deduplication & conflict detection** — Semantic dedup (0.95 threshold) and contradiction detection
-- **Entity & relationship graphs** — Auto-extracted entity mentions and relationships
-- **Heartbeat check** — Zero-token local query for pending work, deadlines, and decaying memories
-- **Scheduling** — Cron-tagged memories with acknowledgment tracking
-- **Teams** — Multi-agent memory visibility boundaries (private, team, global)
-- **Event bus** — Async SSE stream for memory lifecycle events
-- **Pure Go** — No CGO; uses `modernc.org/sqlite` for portable builds
+  <p>
+    <a href="#quick-start">Quick Start</a> &bull;
+    <a href="#api">API Reference</a> &bull;
+    <a href="#architecture">Architecture</a> &bull;
+    <a href="#configuration">Configuration</a>
+  </p>
+
+  [![Go Version](https://img.shields.io/github/go-mod/go-version/keyoku-ai/keyoku-engine?style=flat-square&color=00ADD8)](https://go.dev)
+  [![Go Report Card](https://goreportcard.com/badge/github.com/keyoku-ai/keyoku-engine?style=flat-square)](https://goreportcard.com/report/github.com/keyoku-ai/keyoku-engine)
+  [![CI](https://img.shields.io/github/actions/workflow/status/keyoku-ai/keyoku-engine/ci.yml?style=flat-square&label=CI)](https://github.com/keyoku-ai/keyoku-engine/actions)
+  [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-6366f1?style=flat-square)](LICENSE)
+  [![GitHub Stars](https://img.shields.io/github/stars/keyoku-ai/keyoku-engine?style=flat-square)](https://github.com/keyoku-ai/keyoku-engine/stargazers)
+
+</div>
+
+<br>
+
+<table>
+<tr>
+<td align="center" width="16%">
+  <strong>Semantic Search</strong><br>
+  <sub>Tiered HNSW vector + FTS retrieval with LRU hot cache</sub>
+</td>
+<td align="center" width="16%">
+  <strong>Heartbeat</strong><br>
+  <sub>Zero-token check for deadlines, decay, conflicts &amp; more</sub>
+</td>
+<td align="center" width="16%">
+  <strong>Knowledge Graph</strong><br>
+  <sub>Auto-extracted entities and relationship mapping</sub>
+</td>
+<td align="center" width="16%">
+  <strong>Scheduling</strong><br>
+  <sub>Cron-tagged memories with ack tracking</sub>
+</td>
+<td align="center" width="16%">
+  <strong>Teams</strong><br>
+  <sub>Multi-agent visibility boundaries</sub>
+</td>
+<td align="center" width="16%">
+  <strong>Pure Go</strong><br>
+  <sub>No CGO, no external DB — just SQLite + HNSW</sub>
+</td>
+</tr>
+</table>
 
 ## Quick Start
 
 ### As a Go library
+
+```bash
+go get github.com/keyoku-ai/keyoku-engine
+```
 
 ```go
 import keyoku "github.com/keyoku-ai/keyoku-engine"
@@ -36,14 +81,14 @@ result, _ := k.Remember(ctx, keyoku.RememberInput{
     Messages: messages,
 })
 
-// Search
+// Search by meaning
 memories, _ := k.Search(ctx, keyoku.SearchInput{
     EntityID: "user-123",
     Query:    "what are their preferences?",
     Limit:    5,
 })
 
-// Zero-token heartbeat check
+// Zero-token heartbeat — no LLM call, pure local query
 heartbeat, _ := k.HeartbeatCheck(ctx, keyoku.HeartbeatCheckInput{
     EntityIDs: []string{"user-123"},
 })
@@ -52,20 +97,17 @@ heartbeat, _ := k.HeartbeatCheck(ctx, keyoku.HeartbeatCheckInput{
 ### As an HTTP server
 
 ```bash
-# Build
 make build
-
-# Run
 export OPENAI_API_KEY="sk-..."
-export KEYOKU_SESSION_TOKEN="any-value"
 ./bin/keyoku-server --db ./memories.db
 ```
 
-Default port: `18900` (override with `--port` or `KEYOKU_PORT` env var).
+Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
 ## API
 
-### Memory
+<details>
+<summary><strong>Memory</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -77,18 +119,25 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT` env var).
 | DELETE | `/api/v1/memories` | Delete all memories for entity |
 | GET | `/api/v1/memories/sample` | Representative sample |
 
-### Heartbeat & Monitoring
+</details>
+
+<details>
+<summary><strong>Heartbeat & Monitoring</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/heartbeat/check` | Zero-token action detection |
+| POST | `/api/v1/heartbeat/context` | Extended heartbeat with LLM analysis |
 | POST | `/api/v1/watcher/start` | Start continuous heartbeat monitor |
 | POST | `/api/v1/watcher/stop` | Stop watcher |
 | GET | `/api/v1/health` | Health check |
 | GET | `/api/v1/stats` | Global stats |
 | GET | `/api/v1/stats/{entity_id}` | Per-entity stats |
 
-### Scheduling
+</details>
+
+<details>
+<summary><strong>Scheduling</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -98,7 +147,10 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT` env var).
 | DELETE | `/api/v1/schedule/{id}` | Cancel schedule |
 | GET | `/api/v1/scheduled` | List active schedules |
 
-### Teams
+</details>
+
+<details>
+<summary><strong>Teams</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -107,12 +159,17 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT` env var).
 | POST | `/api/v1/teams/{id}/members` | Add member |
 | DELETE | `/api/v1/teams/{id}/members/{agent_id}` | Remove member |
 
-### Events
+</details>
+
+<details>
+<summary><strong>Events</strong></summary>
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/events` | SSE event stream |
 | POST | `/api/v1/consolidate` | Trigger consolidation |
+
+</details>
 
 ## Architecture
 
@@ -159,11 +216,11 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT` env var).
 
 ## LLM Providers
 
-| Provider | Extraction | Embedding | Custom Base URL |
-|----------|-----------|-----------|-----------------|
+| Provider | Extraction Model | Embedding | Custom Base URL |
+|----------|-----------------|-----------|-----------------|
 | OpenAI | gpt-4o-mini (default) | text-embedding-3-small | Yes |
 | Anthropic | claude-3-5-haiku-latest | — | Yes |
-| Google Gemini | gemini-3-flash-preview | — | — |
+| Google Gemini | gemini-2.5-flash | — | — |
 
 Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 
@@ -203,12 +260,24 @@ make test          # Run all tests
 make test-race     # With race detector
 make bench         # Benchmarks
 make build         # Build for current platform
-make cross         # Cross-compile (darwin/linux x arm64/amd64)
+make cross         # Cross-compile (darwin/linux × arm64/amd64)
 make lint          # golangci-lint
 ```
 
 Requires Go 1.24+.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
 ## License
 
-See [LICENSE](LICENSE) for details.
+Business Source License 1.1 — see [LICENSE](LICENSE) for details.
+
+> [!NOTE]
+> The BSL grants full usage rights for non-production and development use. Production use requires a commercial license until the change date (2029-03-10), after which the code converts to Apache 2.0.
+
+<br>
+<div align="center">
+  <sub>Built by <a href="https://github.com/keyoku-ai">Keyoku</a></sub>
+</div>

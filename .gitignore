@@ -1,7 +1,37 @@
+# Environment
 .env
+.env.*
+!.env.example
+
+# Database
 *.db
 *.sqlite
+*.db-wal
+*.db-shm
 
 # Compiled binaries
 keyoku-server
 /cmd/keyoku-server/keyoku-server
+/bin/
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
