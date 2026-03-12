@@ -396,6 +396,33 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleSeedMemories inserts memories directly without LLM extraction.
+// Useful for testing, migration, and bootstrapping.
+func (h *Handlers) HandleSeedMemories(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Memories []keyoku.SeedMemoryInput `json:"memories"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Memories) == 0 {
+		writeError(w, http.StatusBadRequest, "memories array is required")
+		return
+	}
+
+	ids, err := h.k.SeedMemories(r.Context(), req.Memories)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created": len(ids),
+		"ids":     ids,
+	})
+}
+
 // HandleSearch performs semantic memory search.
 func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	var req searchRequest

@@ -438,9 +438,11 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 	if mem.AgentID == "" {
 		mem.AgentID = "default"
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	mem.CreatedAt = time.Now().UTC()
+	if mem.CreatedAt.IsZero() {
+		mem.CreatedAt = time.Now().UTC()
+	}
 	mem.UpdatedAt = mem.CreatedAt
+	now := mem.CreatedAt.UTC().Format(time.RFC3339)
 
 	tags, _ := mem.Tags.Value()
 	impFactors, _ := mem.ImportanceFactors.Value()

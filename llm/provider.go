@@ -42,6 +42,14 @@ type Provider interface {
 	AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error)
 	SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error)
 	RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error)
+	// ExtractMemoriesCore extracts memories, updates, deletes, skipped (no graph data).
+	// Used by lite models that can't handle the full 6-array schema in a single call.
+	ExtractMemoriesCore(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error)
+	// ExtractGraph extracts entities and relationships only.
+	// Called separately after ExtractMemoriesCore for lite models.
+	ExtractGraph(ctx context.Context, req ExtractionRequest) (*GraphExtractionResponse, error)
+	// IsLite returns true if the provider is running in lite mode (simplified schemas).
+	IsLite() bool
 	Name() string
 	Model() string
 }

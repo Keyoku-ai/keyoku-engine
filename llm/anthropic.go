@@ -575,3 +575,28 @@ func (a *AnthropicProvider) RerankMemories(ctx context.Context, req RerankReques
 
 	return &result, nil
 }
+
+func (a *AnthropicProvider) IsLite() bool { return false }
+
+// ExtractMemoriesCore is a pass-through — Anthropic handles the full schema fine.
+func (a *AnthropicProvider) ExtractMemoriesCore(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
+	resp, err := a.ExtractMemories(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Entities = nil
+	resp.Relationships = nil
+	return resp, nil
+}
+
+// ExtractGraph is a pass-through — Anthropic handles the full schema fine.
+func (a *AnthropicProvider) ExtractGraph(ctx context.Context, req ExtractionRequest) (*GraphExtractionResponse, error) {
+	resp, err := a.ExtractMemories(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &GraphExtractionResponse{
+		Entities:      resp.Entities,
+		Relationships: resp.Relationships,
+	}, nil
+}

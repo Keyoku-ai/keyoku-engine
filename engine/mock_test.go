@@ -621,6 +621,13 @@ func (m *mockProvider) RerankMemories(ctx context.Context, req llm.RerankRequest
 	}
 	return &llm.RerankResponse{}, nil
 }
+func (m *mockProvider) IsLite() bool { return false }
+func (m *mockProvider) ExtractMemoriesCore(ctx context.Context, req llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+	return m.ExtractMemories(ctx, req)
+}
+func (m *mockProvider) ExtractGraph(_ context.Context, _ llm.ExtractionRequest) (*llm.GraphExtractionResponse, error) {
+	return &llm.GraphExtractionResponse{}, nil
+}
 func (m *mockProvider) Name() string {
 	if m.name != "" {
 		return m.name

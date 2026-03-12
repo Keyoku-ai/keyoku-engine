@@ -797,53 +797,64 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			EntityID:   entityID,
 			AgentID:    cfg.agentID,
 			States:     []storage.MemoryState{storage.StateActive},
-			Limit:      20,
+			Limit:      40, // fetch more to compensate for filtering
 			OrderBy:    "created_at",
 			Descending: true,
 		}))
-		if err == nil && len(recent) >= 6 {
-			mid := len(recent) / 2
-			recentHalf := recent[:mid]
-			previousHalf := recent[mid:]
-
-			var recentSum, prevSum float64
-			var notable []*Memory
-			for _, m := range recentHalf {
-				recentSum += m.Sentiment
-				if m.Sentiment > 0.7 || m.Sentiment < -0.7 {
-					notable = append(notable, m)
-				}
-			}
-			for _, m := range previousHalf {
-				prevSum += m.Sentiment
-				if m.Sentiment > 0.7 || m.Sentiment < -0.7 {
-					notable = append(notable, m)
+		if err == nil {
+			// Filter to only memories with non-zero sentiment — unscored memories
+			// (sentiment=0.0) dilute the signal and produce false "stable" readings.
+			var scored []*Memory
+			for _, m := range recent {
+				if m.Sentiment != 0 {
+					scored = append(scored, m)
 				}
 			}
 
-			recentAvg := recentSum / float64(len(recentHalf))
-			prevAvg := prevSum / float64(len(previousHalf))
-			delta := recentAvg - prevAvg
+			if len(scored) >= 6 {
+				mid := len(scored) / 2
+				recentHalf := scored[:mid]
+				previousHalf := scored[mid:]
 
-			direction := "stable"
-			if delta > 0.3 {
-				direction = "improving"
-			} else if delta < -0.3 {
-				direction = "declining"
-			}
-
-			// Only report if there's a notable trend or extreme sentiment
-			if direction != "stable" || len(notable) > 0 {
-				absDelta := delta
-				if absDelta < 0 {
-					absDelta = -absDelta
+				var recentSum, prevSum float64
+				var notable []*Memory
+				for _, m := range recentHalf {
+					recentSum += m.Sentiment
+					if m.Sentiment > 0.7 || m.Sentiment < -0.7 {
+						notable = append(notable, m)
+					}
 				}
-				result.Sentiment = &SentimentTrend{
-					RecentAvg:   recentAvg,
-					PreviousAvg: prevAvg,
-					Direction:   direction,
-					Delta:       absDelta,
-					Notable:     notable,
+				for _, m := range previousHalf {
+					prevSum += m.Sentiment
+					if m.Sentiment > 0.7 || m.Sentiment < -0.7 {
+						notable = append(notable, m)
+					}
+				}
+
+				recentAvg := recentSum / float64(len(recentHalf))
+				prevAvg := prevSum / float64(len(previousHalf))
+				delta := recentAvg - prevAvg
+
+				direction := "stable"
+				if delta > 0.3 {
+					direction = "improving"
+				} else if delta < -0.3 {
+					direction = "declining"
+				}
+
+				// Only report if there's a notable trend or extreme sentiment
+				if direction != "stable" || len(notable) > 0 {
+					absDelta := delta
+					if absDelta < 0 {
+						absDelta = -absDelta
+					}
+					result.Sentiment = &SentimentTrend{
+						RecentAvg:   recentAvg,
+						PreviousAvg: prevAvg,
+						Direction:   direction,
+						Delta:       absDelta,
+						Notable:     notable,
+					}
 				}
 			}
 		}

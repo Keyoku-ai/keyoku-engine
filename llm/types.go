@@ -228,6 +228,13 @@ type RerankResult struct {
 	Score float64 `json:"score"`
 }
 
+// GraphExtractionResponse contains entities and relationships extracted separately.
+// Used by lite models that split extraction into two simpler calls.
+type GraphExtractionResponse struct {
+	Entities      []ExtractedEntity      `json:"entities"`
+	Relationships []ExtractedRelationship `json:"relationships"`
+}
+
 // StateExtractionRequest contains input for automatic state extraction.
 type StateExtractionRequest struct {
 	Content          string

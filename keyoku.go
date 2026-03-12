@@ -372,6 +372,120 @@ func (k *Keyoku) Remember(ctx context.Context, entityID, content string, opts ..
 	}, nil
 }
 
+// SeedMemoryInput describes a memory to insert without LLM extraction.
+type SeedMemoryInput struct {
+	Content           string   `json:"content"`
+	Type              string   `json:"type"`                         // IDENTITY, PREFERENCE, PLAN, ACTIVITY, CONTEXT, EVENT, EPHEMERAL
+	Importance        float64  `json:"importance"`                   // 0.0-1.0
+	EntityID          string   `json:"entity_id"`
+	AgentID           string   `json:"agent_id,omitempty"`
+	Tags              []string `json:"tags,omitempty"`               // e.g. ["cron:daily:09:00", "monitor"]
+	ExpiresAt         string   `json:"expires_at,omitempty"`         // RFC3339 timestamp for deadline
+	Sentiment         float64  `json:"sentiment,omitempty"`          // -1.0 to 1.0
+	ConfidenceFactors []string `json:"confidence_factors,omitempty"` // e.g. ["conflict_flagged: contradicts X"]
+	CreatedAt         string   `json:"created_at,omitempty"`         // RFC3339, defaults to now
+}
+
+// SeedMemory inserts a memory directly, skipping LLM extraction.
+// It still generates a real embedding so the memory is searchable.
+func (k *Keyoku) SeedMemory(ctx context.Context, input SeedMemoryInput) (string, error) {
+	if input.Content == "" || input.EntityID == "" {
+		return "", fmt.Errorf("content and entity_id are required")
+	}
+
+	// Generate embedding
+	embedding, err := k.emb.Embed(ctx, input.Content)
+	if err != nil {
+		return "", fmt.Errorf("failed to embed: %w", err)
+	}
+
+	// Encode embedding as bytes for SQLite backup
+	embBytes := make([]byte, len(embedding)*4)
+	for i, v := range embedding {
+		bits := math.Float32bits(v)
+		embBytes[i*4+0] = byte(bits)
+		embBytes[i*4+1] = byte(bits >> 8)
+		embBytes[i*4+2] = byte(bits >> 16)
+		embBytes[i*4+3] = byte(bits >> 24)
+	}
+
+	// Hash content for dedup
+	h := sha256.Sum256([]byte(input.Content))
+	hash := hex.EncodeToString(h[:])
+
+	memType := storage.MemoryType(input.Type)
+	if !memType.IsValid() {
+		memType = storage.TypeContext
+	}
+
+	agentID := input.AgentID
+	if agentID == "" {
+		agentID = "default"
+	}
+
+	importance := input.Importance
+	if importance <= 0 {
+		importance = 0.5
+	}
+
+	now := time.Now()
+
+	// Parse optional expires_at
+	var expiresAt *time.Time
+	if input.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, input.ExpiresAt); err == nil {
+			expiresAt = &t
+		}
+	}
+
+	// Parse optional created_at (for backdating memories)
+	createdAt := now
+	if input.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, input.CreatedAt); err == nil {
+			createdAt = t
+		}
+	}
+
+	mem := &storage.Memory{
+		EntityID:          input.EntityID,
+		AgentID:           agentID,
+		Content:           input.Content,
+		Hash:              hash,
+		Embedding:         embBytes,
+		Type:              memType,
+		Tags:              storage.StringSlice(input.Tags),
+		Importance:        importance,
+		Confidence:        0.9,
+		Stability:         memType.StabilityDays(),
+		Sentiment:         input.Sentiment,
+		State:             storage.StateActive,
+		CreatedAt:         createdAt,
+		LastAccessedAt:    &createdAt,
+		ExpiresAt:         expiresAt,
+		ConfidenceFactors: storage.StringSlice(input.ConfidenceFactors),
+		Source:            "seed",
+	}
+
+	if err := k.store.CreateMemory(ctx, mem); err != nil {
+		return "", fmt.Errorf("failed to create memory: %w", err)
+	}
+
+	return mem.ID, nil
+}
+
+// SeedMemories inserts multiple memories directly, skipping LLM extraction.
+func (k *Keyoku) SeedMemories(ctx context.Context, inputs []SeedMemoryInput) ([]string, error) {
+	ids := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		id, err := k.SeedMemory(ctx, input)
+		if err != nil {
+			return ids, fmt.Errorf("failed to seed memory %q: %w", input.Content[:min(len(input.Content), 40)], err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // --- SearchOption ---
 
 // SearchOption configures a Search call.

@@ -78,6 +78,7 @@ func main() {
 
 	// Memory CRUD
 	mux.HandleFunc("POST /api/v1/remember", handlers.HandleRemember)
+	mux.HandleFunc("POST /api/v1/seed", handlers.HandleSeedMemories)
 	mux.HandleFunc("POST /api/v1/search", handlers.HandleSearch)
 	mux.HandleFunc("GET /api/v1/memories", handlers.HandleListMemories)
 	mux.HandleFunc("GET /api/v1/memories/", handlers.HandleGetMemory)

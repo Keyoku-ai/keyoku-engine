@@ -7,20 +7,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 
 	"google.golang.org/genai"
 )
 
 // GeminiProvider implements Provider using Google's Gemini API via the new google.golang.org/genai SDK.
 type GeminiProvider struct {
-	client *genai.Client
-	model  string
+	client    *genai.Client
+	model     string
+	liteMode  bool // lite models use simplified schemas for complex methods
+	ultraLite bool // ultra-lite models (e.g. 3.1-flash-lite) need maximally simplified schemas
 }
 
 func NewGeminiProvider(apiKey, model string) (*GeminiProvider, error) {
 	if model == "" {
 		model = "gemini-2.5-flash"
 	}
+	liteMode := strings.Contains(model, "lite")
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
@@ -29,14 +34,93 @@ func NewGeminiProvider(apiKey, model string) (*GeminiProvider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
 	}
-	return &GeminiProvider{client: client, model: model}, nil
+	return &GeminiProvider{client: client, model: model, liteMode: liteMode}, nil
 }
+
+func (g *GeminiProvider) IsLite() bool { return g.liteMode }
 
 func (g *GeminiProvider) Name() string  { return "google" }
 func (g *GeminiProvider) Model() string { return g.model }
 
+// schemaToJsonSchema converts a typed *genai.Schema to a map[string]any suitable for ResponseJsonSchema.
+// Gemini 3+ models require ResponseJsonSchema (raw JSON Schema with lowercase types) instead of
+// ResponseSchema (typed struct with uppercase types like "STRING", "OBJECT").
+func schemaToJsonSchema(s *genai.Schema) map[string]any {
+	if s == nil {
+		return nil
+	}
+	m := map[string]any{}
+
+	// Convert uppercase genai types to lowercase JSON Schema types
+	switch s.Type {
+	case genai.TypeString:
+		m["type"] = "string"
+	case genai.TypeNumber:
+		m["type"] = "number"
+	case genai.TypeBoolean:
+		m["type"] = "boolean"
+	case genai.TypeArray:
+		m["type"] = "array"
+	case genai.TypeObject:
+		m["type"] = "object"
+	default:
+		m["type"] = strings.ToLower(string(s.Type))
+	}
+
+	if s.Items != nil {
+		m["items"] = schemaToJsonSchema(s.Items)
+	}
+	if len(s.Properties) > 0 {
+		props := map[string]any{}
+		for k, v := range s.Properties {
+			props[k] = schemaToJsonSchema(v)
+		}
+		m["properties"] = props
+	}
+	if len(s.Required) > 0 {
+		m["required"] = s.Required
+	}
+	if len(s.Enum) > 0 {
+		m["enum"] = s.Enum
+	}
+	if s.Description != "" {
+		m["description"] = s.Description
+	}
+	return m
+}
+
 // generate is a helper that calls GenerateContent with the given config and returns the text.
+// For lite models, it automatically minimizes thinking to maximize output token budget for JSON.
+// For Gemini 3+ models, it converts ResponseSchema to ResponseJsonSchema (the new API format).
+// Gemini 3+ uses ThinkingLevel; Gemini 2.x uses ThinkingBudget.
 func (g *GeminiProvider) generate(ctx context.Context, prompt string, config *genai.GenerateContentConfig) (string, error) {
+	isGemini3 := strings.Contains(g.model, "3.")
+
+	// Gemini 3+ models: convert ResponseSchema → ResponseJsonSchema (new API format)
+	if isGemini3 && config.ResponseSchema != nil {
+		config.ResponseJsonSchema = schemaToJsonSchema(config.ResponseSchema)
+		config.ResponseSchema = nil
+	}
+
+	if g.liteMode && config.ThinkingConfig == nil {
+		// Lite models: override temperature to 1.0 (Google's recommendation for structured output)
+		config.Temperature = genai.Ptr[float32](1.0)
+		if isGemini3 {
+			// Gemini 3+ models: use ThinkingLevel + generous output budget
+			config.ThinkingConfig = &genai.ThinkingConfig{
+				ThinkingLevel: genai.ThinkingLevelMinimal,
+			}
+			if config.MaxOutputTokens == 0 {
+				config.MaxOutputTokens = 65536
+			}
+		} else {
+			// Gemini 2.x models: use ThinkingBudget=0
+			noThinking := int32(0)
+			config.ThinkingConfig = &genai.ThinkingConfig{
+				ThinkingBudget: &noThinking,
+			}
+		}
+	}
 	resp, err := g.client.Models.GenerateContent(ctx, g.model, genai.Text(prompt), config)
 	if err != nil {
 		return "", err
@@ -49,6 +133,36 @@ func (g *GeminiProvider) generate(ctx context.Context, prompt string, config *ge
 }
 
 func (g *GeminiProvider) ExtractMemories(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
+	// Lite mode: split into two simpler calls run in parallel.
+	if g.liteMode {
+		var (
+			core    *ExtractionResponse
+			graph   *GraphExtractionResponse
+			coreErr error
+			graphErr error
+			wg      sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			core, coreErr = g.ExtractMemoriesCore(ctx, req)
+		}()
+		go func() {
+			defer wg.Done()
+			graph, graphErr = g.ExtractGraph(ctx, req)
+		}()
+		wg.Wait()
+
+		if coreErr != nil {
+			return nil, coreErr
+		}
+		if graphErr == nil {
+			core.Entities = graph.Entities
+			core.Relationships = graph.Relationships
+		}
+		return core, nil
+	}
+
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 		ResponseSchema: &genai.Schema{
@@ -408,6 +522,134 @@ func (g *GeminiProvider) RerankMemories(ctx context.Context, req RerankRequest) 
 	var result RerankResponse
 	if err := json.Unmarshal([]byte(text), &result); err != nil {
 		return nil, fmt.Errorf("failed to parse Gemini rerank response: %w", err)
+	}
+	return &result, nil
+}
+
+func (g *GeminiProvider) ExtractMemoriesCore(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error) {
+	config := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"memories": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"content":            {Type: genai.TypeString},
+							"type":               {Type: genai.TypeString, Enum: []string{"IDENTITY", "PREFERENCE", "RELATIONSHIP", "EVENT", "ACTIVITY", "PLAN", "CONTEXT", "EPHEMERAL"}},
+							"importance":         {Type: genai.TypeNumber},
+							"confidence":         {Type: genai.TypeNumber},
+							"sentiment":          {Type: genai.TypeNumber},
+							"importance_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+							"confidence_factors": {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+							"hedging_detected":   {Type: genai.TypeBoolean},
+						},
+						Required: []string{"content", "type", "importance", "confidence", "sentiment"},
+					},
+				},
+				"updates": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"query":       {Type: genai.TypeString},
+							"new_content": {Type: genai.TypeString},
+							"reason":      {Type: genai.TypeString},
+						},
+						Required: []string{"query", "new_content", "reason"},
+					},
+				},
+				"deletes": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"query":  {Type: genai.TypeString},
+							"reason": {Type: genai.TypeString},
+						},
+						Required: []string{"query", "reason"},
+					},
+				},
+				"skipped": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"text":   {Type: genai.TypeString},
+							"reason": {Type: genai.TypeString},
+						},
+						Required: []string{"text", "reason"},
+					},
+				},
+			},
+		},
+		Temperature: genai.Ptr[float32](0.2),
+		TopP:        genai.Ptr[float32](0.8),
+	}
+
+	text, err := g.generate(ctx, FormatPrompt(req), config)
+	if err != nil {
+		return nil, fmt.Errorf("Gemini core extraction failed: %w", err)
+	}
+
+	var result ExtractionResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini core extraction response: %w", err)
+	}
+	if err := validateResponse(&result); err != nil {
+		return nil, fmt.Errorf("invalid core extraction response: %w", err)
+	}
+	return &result, nil
+}
+
+func (g *GeminiProvider) ExtractGraph(ctx context.Context, req ExtractionRequest) (*GraphExtractionResponse, error) {
+	config := &genai.GenerateContentConfig{
+		ResponseMIMEType: "application/json",
+		ResponseSchema: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"entities": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"canonical_name": {Type: genai.TypeString},
+							"type":           {Type: genai.TypeString, Enum: []string{"PERSON", "ORGANIZATION", "LOCATION", "PRODUCT"}},
+							"aliases":        {Type: genai.TypeArray, Items: &genai.Schema{Type: genai.TypeString}},
+							"context":        {Type: genai.TypeString},
+						},
+						Required: []string{"canonical_name", "type"},
+					},
+				},
+				"relationships": {
+					Type: genai.TypeArray,
+					Items: &genai.Schema{
+						Type: genai.TypeObject,
+						Properties: map[string]*genai.Schema{
+							"source":     {Type: genai.TypeString},
+							"relation":   {Type: genai.TypeString},
+							"target":     {Type: genai.TypeString},
+							"confidence": {Type: genai.TypeNumber},
+						},
+						Required: []string{"source", "relation", "target", "confidence"},
+					},
+				},
+			},
+		},
+		Temperature: genai.Ptr[float32](0.2),
+		TopP:        genai.Ptr[float32](0.8),
+	}
+
+	text, err := g.generate(ctx, FormatPrompt(req), config)
+	if err != nil {
+		return nil, fmt.Errorf("Gemini graph extraction failed: %w", err)
+	}
+
+	var result GraphExtractionResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini graph extraction response: %w", err)
 	}
 	return &result, nil
 }
