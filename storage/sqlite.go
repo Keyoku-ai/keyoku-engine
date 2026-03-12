@@ -682,6 +682,29 @@ func (s *SQLiteStore) FindSimilarWithOptions(ctx context.Context, embedding []fl
 
 // --- Queries ---
 
+// allowedOrderByColumns restricts ORDER BY to valid column names, preventing SQL injection.
+var allowedOrderByColumns = map[string]bool{
+	"created_at": true, "updated_at": true, "importance": true,
+	"confidence": true, "access_count": true, "deleted_at": true,
+	"last_accessed_at": true, "stability": true,
+}
+
+// allowedEntityColumns restricts UPDATE SET columns for entities.
+var allowedEntityColumns = map[string]bool{
+	"name": true, "description": true, "entity_type": true, "metadata": true,
+}
+
+// allowedRelationshipColumns restricts UPDATE SET columns for relationships.
+var allowedRelationshipColumns = map[string]bool{
+	"strength": true, "description": true, "relationship_type": true, "metadata": true,
+}
+
+// allowedSchemaColumns restricts UPDATE SET columns for extraction schemas.
+var allowedSchemaColumns = map[string]bool{
+	"name": true, "description": true, "schema_definition": true,
+	"is_active": true, "version": true,
+}
+
 func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*Memory, error) {
 	var where []string
 	var args []any
@@ -734,14 +757,17 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 		where = append(where, fmt.Sprintf("state IN (%s)", strings.Join(ph, ",")))
 	}
 	if len(query.Tags) > 0 {
+		likeEscaper := strings.NewReplacer("%", "\\%", "_", "\\_")
 		for _, tag := range query.Tags {
-			where = append(where, "tags LIKE ?")
-			args = append(args, "%"+tag+"%")
+			escaped := likeEscaper.Replace(tag)
+			where = append(where, "tags LIKE ? ESCAPE '\\'")
+			args = append(args, "%"+escaped+"%")
 		}
 	}
 	if query.TagPrefix != "" {
-		where = append(where, "tags LIKE ?")
-		args = append(args, "%"+query.TagPrefix+"%")
+		escaped := strings.NewReplacer("%", "\\%", "_", "\\_").Replace(query.TagPrefix)
+		where = append(where, "tags LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escaped+"%")
 	}
 
 	whereClause := ""
@@ -751,6 +777,9 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 
 	orderBy := "created_at"
 	if query.OrderBy != "" {
+		if !allowedOrderByColumns[query.OrderBy] {
+			return nil, fmt.Errorf("invalid order_by column: %q", query.OrderBy)
+		}
 		orderBy = query.OrderBy
 	}
 	direction := "ASC"
@@ -1440,6 +1469,9 @@ func (s *SQLiteStore) UpdateEntity(ctx context.Context, id string, updates map[s
 	var args []any
 
 	for k, v := range updates {
+		if !allowedEntityColumns[k] {
+			return nil, fmt.Errorf("invalid entity update column: %q", k)
+		}
 		setClauses = append(setClauses, k+" = ?")
 		args = append(args, v)
 	}
@@ -1723,6 +1755,9 @@ func (s *SQLiteStore) UpdateRelationship(ctx context.Context, id string, updates
 	var setClauses []string
 	var args []any
 	for k, v := range updates {
+		if !allowedRelationshipColumns[k] {
+			return nil, fmt.Errorf("invalid relationship update column: %q", k)
+		}
 		setClauses = append(setClauses, k+" = ?")
 		args = append(args, v)
 	}
@@ -2000,6 +2035,9 @@ func (s *SQLiteStore) UpdateSchema(ctx context.Context, id string, updates map[s
 	var args []any
 
 	for k, v := range updates {
+		if !allowedSchemaColumns[k] {
+			return nil, fmt.Errorf("invalid schema update column: %q", k)
+		}
 		if k == "schema_definition" {
 			if def, ok := v.(map[string]any); ok {
 				jsonBytes, _ := json.Marshal(def)

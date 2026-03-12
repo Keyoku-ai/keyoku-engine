@@ -81,6 +81,9 @@ func validateResponse(resp *ExtractionResponse) error {
 		if mem.Content == "" {
 			return fmt.Errorf("memory[%d]: content is empty", i)
 		}
+		if len(mem.Content) > 5000 {
+			return fmt.Errorf("memory[%d]: content too long (%d chars, max 5000)", i, len(mem.Content))
+		}
 		if mem.ImportanceFactors == nil {
 			mem.ImportanceFactors = []string{}
 		}

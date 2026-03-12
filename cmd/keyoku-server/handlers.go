@@ -6,7 +6,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,6 +129,9 @@ type heartbeatContextRequest struct {
 	ActivitySummary string  `json:"activity_summary,omitempty"`  // Current conversation activity for LLM context
 	Autonomy        string  `json:"autonomy,omitempty"`          // "observe", "suggest", "act" (default: "suggest")
 
+	// Conversation awareness
+	InConversation bool `json:"in_conversation,omitempty"` // Plugin signals user is actively talking
+
 	// Optional parameter overrides (defaults come from autonomy level)
 	NudgeAfterSilence    string `json:"nudge_after_silence,omitempty"`      // e.g. "4h"
 	MaxNudgesPerDay      int    `json:"max_nudges_per_day,omitempty"`
@@ -216,6 +221,9 @@ type heartbeatContextResponse struct {
 	KnowledgeGaps      []knowledgeGapJSON      `json:"knowledge_gaps,omitempty"`
 	BehavioralPatterns []behavioralPatternJSON  `json:"behavioral_patterns,omitempty"`
 
+	// Conversation state
+	InConversation bool `json:"in_conversation,omitempty"`
+
 	// v2: Intelligence metadata
 	ResponseRate    float64            `json:"response_rate,omitempty"`
 	ConfluenceScore int                `json:"confluence_score,omitempty"`
@@ -277,9 +285,46 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// writeInternalError logs the real error and returns a generic message to the client.
+func writeInternalError(w http.ResponseWriter, err error) {
+	log.Printf("ERROR: %v", err)
+	writeError(w, http.StatusInternalServerError, "internal server error")
+}
+
+const maxBodySize = 1 << 20 // 1MB
+
 func decodeBody(r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxBodySize)
 	defer r.Body.Close()
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+const maxContentLength = 50000
+const maxLimit = 1000
+
+// validID matches safe identifier characters (alphanumeric, hyphens, underscores, colons).
+var validID = regexp.MustCompile(`^[a-zA-Z0-9_:.-]+$`)
+
+func extractPathID(r *http.Request, prefix string) (string, bool) {
+	id := strings.TrimPrefix(r.URL.Path, prefix)
+	if id == "" || !validID.MatchString(id) {
+		return "", false
+	}
+	return id, true
+}
+
+func clampLimit(v string, defaultVal int) int {
+	if v == "" {
+		return defaultVal
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	if n > maxLimit {
+		return maxLimit
+	}
+	return n
 }
 
 // --- Handlers ---
@@ -302,6 +347,10 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EntityID == "" || req.Content == "" {
 		writeError(w, http.StatusBadRequest, "entity_id and content are required")
+		return
+	}
+	if len(req.Content) > maxContentLength {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("content too large (max %d chars)", maxContentLength))
 		return
 	}
 
@@ -327,7 +376,7 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.k.Remember(r.Context(), req.EntityID, req.Content, opts...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -368,7 +417,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.k.Search(r.Context(), req.EntityID, req.Query, opts...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -388,7 +437,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 // Used for lifecycle-aware consolidation (e.g., after agent completion).
 func (h *Handlers) HandleConsolidate(w http.ResponseWriter, r *http.Request) {
 	if err := h.k.RunConsolidation(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "consolidation failed: "+err.Error())
+		writeInternalError(w, fmt.Errorf("consolidation failed: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -430,7 +479,7 @@ func (h *Handlers) HandleHeartbeatCheck(w http.ResponseWriter, r *http.Request) 
 
 	result, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, opts...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -505,6 +554,10 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	}
 	hbOpts = append(hbOpts, keyoku.WithAutonomy(autonomy))
 
+	if req.InConversation {
+		hbOpts = append(hbOpts, keyoku.WithInConversation(true))
+	}
+
 	// Build optional parameter overrides
 	var params keyoku.HeartbeatParams
 	hasOverrides := false
@@ -542,7 +595,7 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 
 	hbResult, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, hbOpts...)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "heartbeat check failed: "+err.Error())
+		writeInternalError(w, fmt.Errorf("heartbeat check failed: %w", err))
 		return
 	}
 
@@ -644,6 +697,7 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	}
 
 	// v2: Populate intelligence metadata
+	resp.InConversation = hbResult.InConversation
 	resp.ResponseRate = hbResult.ResponseRate
 	resp.ConfluenceScore = hbResult.ConfluenceScore
 	resp.GraphContext = hbResult.GraphContext
@@ -858,15 +912,15 @@ func (h *Handlers) HandleWatcherUnwatch(w http.ResponseWriter, r *http.Request) 
 
 // HandleGetMemory retrieves a single memory by ID.
 func (h *Handlers) HandleGetMemory(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "memory id is required")
+	id, ok := extractPathID(r, "/api/v1/memories/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid memory id")
 		return
 	}
 
 	memory, err := h.k.Get(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	if memory == nil {
@@ -881,18 +935,13 @@ func (h *Handlers) HandleGetMemory(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 	entityID := r.URL.Query().Get("entity_id")
 
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	limit := clampLimit(r.URL.Query().Get("limit"), 100)
 
 	if entityID != "" {
 		// Single entity listing
 		memories, err := h.k.List(r.Context(), entityID, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeInternalError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, toMemoryJSONSlice(memories))
@@ -902,7 +951,7 @@ func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 	// No entity_id — list across all entities
 	entities, err := h.k.ListEntities(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	var allMemories []memoryJSON
@@ -927,7 +976,7 @@ func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) HandleListEntities(w http.ResponseWriter, r *http.Request) {
 	entities, err := h.k.ListEntities(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, entities)
@@ -935,14 +984,14 @@ func (h *Handlers) HandleListEntities(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteMemory deletes a single memory by ID.
 func (h *Handlers) HandleDeleteMemory(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "memory id is required")
+	id, ok := extractPathID(r, "/api/v1/memories/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid memory id")
 		return
 	}
 
 	if err := h.k.Delete(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -960,7 +1009,7 @@ func (h *Handlers) HandleDeleteAllMemories(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := h.k.DeleteAll(r.Context(), req.EntityID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -969,15 +1018,15 @@ func (h *Handlers) HandleDeleteAllMemories(w http.ResponseWriter, r *http.Reques
 
 // HandleStats returns memory statistics for an entity.
 func (h *Handlers) HandleStats(w http.ResponseWriter, r *http.Request) {
-	entityID := strings.TrimPrefix(r.URL.Path, "/api/v1/stats/")
-	if entityID == "" {
-		writeError(w, http.StatusBadRequest, "entity_id is required in path")
+	entityID, ok := extractPathID(r, "/api/v1/stats/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid entity_id in path")
 		return
 	}
 
 	stats, err := h.k.Stats(r.Context(), entityID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1009,7 +1058,7 @@ func (h *Handlers) HandleGlobalStats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.k.GlobalStats(r.Context(), entityID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1019,16 +1068,11 @@ func (h *Handlers) HandleGlobalStats(w http.ResponseWriter, r *http.Request) {
 // HandleSampleMemories returns a representative sample of memories using server-side SQL.
 func (h *Handlers) HandleSampleMemories(w http.ResponseWriter, r *http.Request) {
 	entityID := r.URL.Query().Get("entity_id") // optional
-	limit := 150
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
+	limit := clampLimit(r.URL.Query().Get("limit"), 150)
 
 	memories, err := h.k.SampleMemories(r.Context(), entityID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1048,7 +1092,7 @@ func (h *Handlers) HandleScheduleAck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.k.AcknowledgeSchedule(r.Context(), req.MemoryID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1066,7 +1110,7 @@ func (h *Handlers) HandleListScheduled(w http.ResponseWriter, r *http.Request) {
 
 	memories, err := h.k.ListScheduled(r.Context(), entityID, agentID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1101,9 +1145,9 @@ func (h *Handlers) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) 
 
 // HandleUpdateSchedule modifies an existing scheduled memory's cron tag and/or content.
 func (h *Handlers) HandleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/schedule/")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "schedule id is required in path")
+	id, ok := extractPathID(r, "/api/v1/schedule/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid schedule id")
 		return
 	}
 
@@ -1131,9 +1175,9 @@ func (h *Handlers) HandleUpdateSchedule(w http.ResponseWriter, r *http.Request) 
 
 // HandleCancelSchedule archives a scheduled memory, cancelling the schedule.
 func (h *Handlers) HandleCancelSchedule(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/schedule/")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "schedule id is required in path")
+	id, ok := extractPathID(r, "/api/v1/schedule/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid schedule id")
 		return
 	}
 
@@ -1147,10 +1191,10 @@ func (h *Handlers) HandleCancelSchedule(w http.ResponseWriter, r *http.Request) 
 
 // HandleUpdateTags updates the tags on a memory.
 func (h *Handlers) HandleUpdateTags(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")
-	id = strings.TrimSuffix(id, "/tags")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "memory id is required")
+	rawID := strings.TrimPrefix(r.URL.Path, "/api/v1/memories/")
+	id := strings.TrimSuffix(rawID, "/tags")
+	if id == "" || !validID.MatchString(id) {
+		writeError(w, http.StatusBadRequest, "invalid memory id")
 		return
 	}
 
@@ -1163,7 +1207,7 @@ func (h *Handlers) HandleUpdateTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.k.UpdateTags(r.Context(), id, req.Tags); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1201,7 +1245,7 @@ func (h *Handlers) HandleCreateTeam(w http.ResponseWriter, r *http.Request) {
 
 	team, err := h.k.Teams().Create(r.Context(), req.Name, req.Description)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1222,8 +1266,8 @@ func (h *Handlers) HandleGetTeam(w http.ResponseWriter, r *http.Request) {
 	if idx := strings.Index(id, "/"); idx != -1 {
 		id = id[:idx]
 	}
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "team id is required")
+	if id == "" || !validID.MatchString(id) {
+		writeError(w, http.StatusBadRequest, "invalid team id")
 		return
 	}
 
@@ -1245,14 +1289,14 @@ func (h *Handlers) HandleGetTeam(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteTeam deletes a team.
 func (h *Handlers) HandleDeleteTeam(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
-	if id == "" {
-		writeError(w, http.StatusBadRequest, "team id is required")
+	id, ok := extractPathID(r, "/api/v1/teams/")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid team id")
 		return
 	}
 
 	if err := h.k.Teams().Delete(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1264,8 +1308,8 @@ func (h *Handlers) HandleAddTeamMember(w http.ResponseWriter, r *http.Request) {
 	// Extract team ID from path: /api/v1/teams/{id}/members
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
 	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 1 || parts[0] == "" {
-		writeError(w, http.StatusBadRequest, "team id is required")
+	if len(parts) < 1 || parts[0] == "" || !validID.MatchString(parts[0]) {
+		writeError(w, http.StatusBadRequest, "invalid team id")
 		return
 	}
 	teamID := parts[0]
@@ -1279,7 +1323,7 @@ func (h *Handlers) HandleAddTeamMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.k.Teams().AddMember(r.Context(), teamID, req.AgentID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1291,15 +1335,15 @@ func (h *Handlers) HandleRemoveTeamMember(w http.ResponseWriter, r *http.Request
 	// Extract from path: /api/v1/teams/{id}/members/{agent_id}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 || parts[0] == "" || parts[2] == "" {
-		writeError(w, http.StatusBadRequest, "team id and agent_id are required in path")
+	if len(parts) < 3 || parts[0] == "" || parts[2] == "" || !validID.MatchString(parts[0]) || !validID.MatchString(parts[2]) {
+		writeError(w, http.StatusBadRequest, "invalid team id or agent_id")
 		return
 	}
 	teamID := parts[0]
 	agentID := parts[2]
 
 	if err := h.k.Teams().RemoveMember(r.Context(), teamID, agentID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 
@@ -1311,15 +1355,15 @@ func (h *Handlers) HandleListTeamMembers(w http.ResponseWriter, r *http.Request)
 	// Extract from path: /api/v1/teams/{id}/members
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/teams/")
 	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 1 || parts[0] == "" {
-		writeError(w, http.StatusBadRequest, "team id is required")
+	if len(parts) < 1 || parts[0] == "" || !validID.MatchString(parts[0]) {
+		writeError(w, http.StatusBadRequest, "invalid team id")
 		return
 	}
 	teamID := parts[0]
 
 	members, err := h.k.Teams().Members(r.Context(), teamID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, err)
 		return
 	}
 

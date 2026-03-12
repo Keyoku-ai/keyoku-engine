@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -26,7 +28,8 @@ func main() {
 	flag.Parse()
 
 	// Session token check — binary only works when launched by a host application
-	if os.Getenv("KEYOKU_SESSION_TOKEN") == "" {
+	sessionToken := os.Getenv("KEYOKU_SESSION_TOKEN")
+	if sessionToken == "" {
 		log.Fatal("keyoku-server requires KEYOKU_SESSION_TOKEN to be set.\n" +
 			"This binary is designed to be launched by the a host application.\n" +
 			"Set KEYOKU_SESSION_TOKEN to any value to start.")
@@ -123,17 +126,22 @@ func main() {
 	// SSE events
 	mux.HandleFunc("GET /api/v1/events", hub.HandleSSE)
 
-	// CORS middleware
-	handler := corsMiddleware(mux)
+	// Build CORS allowlist
+	allowedOrigins := buildCORSAllowlist()
+
+	// Middleware stack: auth → CORS → router
+	handler := authMiddleware(sessionToken, corsMiddleware(allowedOrigins, mux))
 
 	// Create server
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      handler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // disabled for SSE
-		IdleTimeout:  120 * time.Second,
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
 	}
 
 	// Graceful shutdown
@@ -162,14 +170,84 @@ func main() {
 	log.Println("keyoku-server stopped")
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+// authMiddleware validates per-request bearer tokens using constant-time comparison.
+// Health check endpoint is exempt to allow monitoring without credentials.
+func authMiddleware(token string, next http.Handler) http.Handler {
+	tokenBytes := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
+		// Allow health checks without auth
+		if r.URL.Path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
 		}
 
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		// Allow CORS preflight without auth
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		provided := []byte(strings.TrimPrefix(auth, "Bearer "))
+		if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// buildCORSAllowlist builds the set of allowed CORS origins.
+// Default: localhost origins. Override with KEYOKU_CORS_ORIGINS env var (comma-separated).
+func buildCORSAllowlist() map[string]bool {
+	allowed := map[string]bool{
+		"http://localhost":       true,
+		"http://localhost:3000":  true,
+		"http://localhost:5173":  true,
+		"http://localhost:8080":  true,
+		"http://127.0.0.1":      true,
+		"http://127.0.0.1:3000": true,
+		"http://127.0.0.1:5173": true,
+		"http://127.0.0.1:8080": true,
+		"https://sentai.dev":    true,
+		"https://sentai.cloud":  true,
+	}
+
+	if origins := os.Getenv("KEYOKU_CORS_ORIGINS"); origins != "" {
+		for _, o := range strings.Split(origins, ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				allowed[o] = true
+			}
+		}
+	}
+
+	return allowed
+}
+
+// corsMiddleware validates Origin against an allowlist instead of echoing any origin.
+func corsMiddleware(allowedOrigins map[string]bool, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+
+		if origin != "" && allowedOrigins[origin] {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else if origin == "" {
+			// Same-origin request (no Origin header) — allow
+		}
+		// If origin is set but not in allowlist, don't set CORS headers (browser will block)
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 

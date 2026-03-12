@@ -48,6 +48,9 @@ type HeartbeatResult struct {
 	SignalFingerprint  string // for debugging
 	NudgeContext       string // memory content selected for nudge
 
+	// Conversation state
+	InConversation bool // Whether user is actively in conversation
+
 	// v2: Intelligence metadata
 	PositiveDeltas  []PositiveDelta // Detected positive changes since last heartbeat
 	GraphContext    []string        // Entity relationship context for LLM
@@ -266,6 +269,9 @@ type heartbeatConfig struct {
 	// Intelligent heartbeat
 	autonomy        string           // "observe", "suggest", "act"
 	heartbeatParams *HeartbeatParams // optional overrides
+
+	// Conversation awareness
+	inConversation bool // Plugin signals that user is actively talking
 }
 
 // HeartbeatCheckType represents a specific check to run.
@@ -345,6 +351,10 @@ func WithHeartbeatParams(params *HeartbeatParams) HeartbeatOption {
 
 // WithLLMPrioritization enables LLM-powered action prioritization on heartbeat results.
 // Only fires when ShouldAct is true. The provider should be the same one used for memory extraction.
+func WithInConversation(inConversation bool) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.inConversation = inConversation }
+}
+
 func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
 	return func(c *heartbeatConfig) {
 		c.llmProvider = provider
@@ -900,24 +910,46 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 	}
 
-	// 3. Active conversation suppression
-	recentMsgs, convErr := k.store.GetRecentSessionMessages(ctx, entityID, 1)
-	if convErr == nil && len(recentMsgs) > 0 {
-		sinceLastMsg := time.Since(recentMsgs[0].CreatedAt)
-		if sinceLastMsg < 15*time.Minute {
-			hasImmediate := len(result.Scheduled) > 0 || len(result.Deadlines) > 0
-			if !hasImmediate {
-				result.ShouldAct = false
-				result.DecisionReason = "suppress_active_conversation"
-				k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_active_conversation", TierLow, 0)
-				return
-			}
+	// 3. Active conversation awareness — tier-aware, not binary
+	inConversation := cfg.inConversation
+	if !inConversation {
+		// Fall back to session message heuristic when plugin doesn't signal
+		recentMsgs, convErr := k.store.GetRecentSessionMessages(ctx, entityID, 1)
+		if convErr == nil && len(recentMsgs) > 0 {
+			inConversation = time.Since(recentMsgs[0].CreatedAt) < 15*time.Minute
 		}
+	}
+	if inConversation {
+		result.InConversation = true
 	}
 
 	// 4. Classify signals
 	activeSignals := k.classifyActiveSignals(result)
+
+	// During active conversation: filter to elevated+ only (no nudges, no low/normal)
+	if inConversation && len(activeSignals) > 0 {
+		conversationSignals := make(map[HeartbeatCheckType]string)
+		for checkType, tier := range activeSignals {
+			if tier == TierImmediate || tier == TierElevated {
+				conversationSignals[checkType] = tier
+			}
+		}
+		if len(conversationSignals) == 0 {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_conversation_low"
+			k.recordDecision(ctx, entityID, agentID, "signal", "", "suppress_conversation_low", TierLow, 0)
+			return
+		}
+		activeSignals = conversationSignals
+	}
+
 	if len(activeSignals) == 0 {
+		// Never nudge during active conversation
+		if inConversation {
+			result.ShouldAct = false
+			result.DecisionReason = "no_signals"
+			return
+		}
 		k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
 		return
 	}
