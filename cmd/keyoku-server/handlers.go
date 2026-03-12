@@ -631,8 +631,8 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	// 4. LLM analysis (if requested and provider available)
-	if req.Analyze {
+	// 4. LLM analysis — only when engine decided to act (saves ~90% of LLM calls)
+	if req.Analyze && resp.ShouldAct {
 		provider := h.k.Provider()
 		if provider != nil {
 			autonomy := req.Autonomy
