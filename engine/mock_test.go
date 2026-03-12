@@ -84,6 +84,7 @@ type mockStore struct {
 	logAgentStateHistoryFn           func(context.Context, *storage.AgentStateHistory) error
 	aggregateStatsFn                 func(context.Context, string) (*storage.AggregatedStats, error)
 	sampleMemoriesFn                 func(context.Context, string, int) ([]*storage.Memory, error)
+	searchFTSWithOptionsFn           func(context.Context, string, string, int, storage.SimilarityOptions) ([]*storage.Memory, error)
 	closeFn                          func() error
 	pingFn                           func(context.Context) error
 }
@@ -514,7 +515,9 @@ func (m *mockStore) SampleMemories(ctx context.Context, entityID string, limit i
 	return nil, nil
 }
 func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
-func (m *mockStore) SearchFTSWithOptions(_ context.Context, _ string, _ string, _ int, _ storage.SimilarityOptions) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) SearchFTSWithOptions(ctx context.Context, query string, entityID string, limit int, opts storage.SimilarityOptions) ([]*storage.Memory, error) {
+	if m.searchFTSWithOptionsFn != nil { return m.searchFTSWithOptionsFn(ctx, query, entityID, limit, opts) }; return nil, nil
+}
 func (m *mockStore) GetHNSWIndexSize() int {
 	if m.getHNSWIndexSizeFn != nil { return m.getHNSWIndexSizeFn() }; return 0
 }
@@ -556,6 +559,7 @@ type mockProvider struct {
 	extractWithSchemaFn   func(context.Context, llm.CustomExtractionRequest) (*llm.CustomExtractionResponse, error)
 	extractStateFn        func(context.Context, llm.StateExtractionRequest) (*llm.StateExtractionResponse, error)
 	detectConflictFn      func(context.Context, llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error)
+	rerankMemoriesFn      func(context.Context, llm.RerankRequest) (*llm.RerankResponse, error)
 	name                  string
 	model                 string
 }
@@ -601,6 +605,12 @@ func (m *mockProvider) AnalyzeHeartbeatContext(_ context.Context, _ llm.Heartbea
 }
 func (m *mockProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
 	return &llm.GraphSummaryResponse{}, nil
+}
+func (m *mockProvider) RerankMemories(ctx context.Context, req llm.RerankRequest) (*llm.RerankResponse, error) {
+	if m.rerankMemoriesFn != nil {
+		return m.rerankMemoriesFn(ctx, req)
+	}
+	return &llm.RerankResponse{}, nil
 }
 func (m *mockProvider) Name() string {
 	if m.name != "" {

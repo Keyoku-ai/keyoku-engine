@@ -524,3 +524,54 @@ func (a *AnthropicProvider) SummarizeGraph(ctx context.Context, req GraphSummary
 
 	return &result, nil
 }
+
+func (a *AnthropicProvider) RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
+	toolParam := anthropic.ToolParam{
+		Name:        "rerank_memories",
+		Description: anthropic.String("Re-rank memory candidates by relevance to the query"),
+		InputSchema: anthropic.ToolInputSchemaParam{
+			Properties: map[string]interface{}{
+				"rankings": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"id":    map[string]interface{}{"type": "string"},
+							"score": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+						},
+						"required": []string{"id", "score"},
+					},
+				},
+			},
+		},
+	}
+
+	prompt := FormatRerankPrompt(req)
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 1024,
+		System: []anthropic.TextBlockParam{
+			{Text: "You are a memory relevance ranker. Use the rerank_memories tool to return your rankings."},
+		},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+		Tools:      []anthropic.ToolUnionParam{{OfTool: &toolParam}},
+		ToolChoice: anthropic.ToolChoiceParamOfTool("rerank_memories"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Anthropic rerank failed: %w", err)
+	}
+
+	toolInputStr, err := a.extractToolUseInput(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result RerankResponse
+	if err := json.Unmarshal([]byte(toolInputStr), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Anthropic rerank response: %w", err)
+	}
+
+	return &result, nil
+}

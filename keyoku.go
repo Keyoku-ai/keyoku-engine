@@ -129,12 +129,22 @@ func New(cfg Config) (*Keyoku, error) {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
 
-	// Create embedder (supports custom base URL for OpenRouter/LiteLLM)
-	embBaseURL := cfg.EmbeddingBaseURL
-	if embBaseURL == "" {
-		embBaseURL = cfg.OpenAIBaseURL // Fall back to OpenAI base URL
+	// Create embedder (supports OpenAI or Gemini)
+	var emb embedder.Embedder
+	switch cfg.EmbeddingProvider {
+	case "gemini", "google":
+		var embErr error
+		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel)
+		if embErr != nil {
+			return nil, fmt.Errorf("failed to create Gemini embedder: %w", embErr)
+		}
+	default: // "openai" or empty
+		embBaseURL := cfg.EmbeddingBaseURL
+		if embBaseURL == "" {
+			embBaseURL = cfg.OpenAIBaseURL
+		}
+		emb = embedder.NewOpenAIWithBaseURL(cfg.OpenAIAPIKey, cfg.EmbeddingModel, embBaseURL)
 	}
-	emb := embedder.NewOpenAIWithBaseURL(cfg.OpenAIAPIKey, cfg.EmbeddingModel, embBaseURL)
 
 	// Create storage (SQLite + HNSW vector index)
 	store, err := storage.NewSQLite(cfg.DBPath, emb.Dimensions())

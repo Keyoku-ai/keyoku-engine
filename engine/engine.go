@@ -23,12 +23,29 @@ type EngineConfig struct {
 	TokenBudget             *TokenBudgetConfig // nil = unlimited
 	Significance            *SignificanceConfig // nil = use defaults (enabled)
 	EnableImportanceReEval  bool               // enable LLM-based importance re-evaluation for related memories
+
+	// Query retrieval
+	DefaultMinScore       float64 // minimum similarity threshold for HNSW search (default: 0.3)
+	EnableFTSFallback     bool    // enable FTS keyword fallback after HNSW search (default: false)
+	FTSBaselineSimilarity float64 // baseline similarity score for FTS results (default: 0.4)
+	DiversityThreshold    float64 // similarity threshold for diversity enforcement (default: 0.9)
+
+	// Importance re-evaluation thresholds
+	ReEvalSimilarityMin float64 // min similarity for re-eval candidates (default: 0.5)
+	ReEvalSimilarityMax float64 // max similarity for re-eval candidates (default: 0.85)
+	ReEvalImportanceMin float64 // min importance for re-eval candidates (default: 0.5)
 }
 
 // DefaultEngineConfig returns a default engine configuration.
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		ContextTurns: 5,
+		ContextTurns:          5,
+		DefaultMinScore:       0.3,
+		FTSBaselineSimilarity: 0.4,
+		DiversityThreshold:    0.9,
+		ReEvalSimilarityMin:   0.5,
+		ReEvalSimilarityMax:   0.85,
+		ReEvalImportanceMin:   0.5,
 	}
 }
 
@@ -65,6 +82,24 @@ func NewEngine(
 ) *Engine {
 	if config.ContextTurns <= 0 {
 		config.ContextTurns = 5
+	}
+	if config.DefaultMinScore <= 0 {
+		config.DefaultMinScore = 0.3
+	}
+	if config.FTSBaselineSimilarity <= 0 {
+		config.FTSBaselineSimilarity = 0.4
+	}
+	if config.DiversityThreshold <= 0 {
+		config.DiversityThreshold = 0.9
+	}
+	if config.ReEvalSimilarityMin <= 0 {
+		config.ReEvalSimilarityMin = 0.5
+	}
+	if config.ReEvalSimilarityMax <= 0 {
+		config.ReEvalSimilarityMax = 0.85
+	}
+	if config.ReEvalImportanceMin <= 0 {
+		config.ReEvalImportanceMin = 0.5
 	}
 
 	graphEngine := NewGraphEngine(store, DefaultGraphConfig())
@@ -634,7 +669,8 @@ type QueryRequest struct {
 	AgentID   string
 	TeamAware bool    // When true, resolve team and apply visibility filtering
 	TeamID    string  // Team ID for visibility resolution
-	MinScore  float64 // Minimum similarity threshold (0 = use default 0.3)
+	MinScore       float64 // Minimum similarity threshold (0 = use default)
+	EnableLLMRerank bool   // When true, use LLM to re-rank HNSW results for better accuracy
 }
 
 // QueryResult represents a single query result.
@@ -679,7 +715,7 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 	}
 	minScore := req.MinScore
 	if minScore <= 0 {
-		minScore = 0.3 // default threshold
+		minScore = e.config.DefaultMinScore
 	}
 	if req.AgentID != "" || req.TeamAware {
 		candidates, err = e.store.FindSimilarWithOptions(ctx, embedding, entityID, candidateCount, minScore, opts)
@@ -710,51 +746,49 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 		})
 	}
 
-	// Hybrid retrieval: FTS keyword fallback to catch memories that embedding misses.
-	// Uses query expansion to generate multiple FTS queries from the original query.
-	// E.g., "user's name" → also searches "name", "called", which match memories
-	// containing "User's name is Marcus Chen".
-	ftsQueries := expandQueryForFTS(req.Query)
-	for _, ftsQuery := range ftsQueries {
-		ftsResults, ftsErr := e.store.SearchFTSWithOptions(ctx, ftsQuery, entityID, candidateCount, opts)
-		if ftsErr != nil || len(ftsResults) == 0 {
-			continue
-		}
-		for _, mem := range ftsResults {
-			if seenIDs[mem.ID] {
+	// Optional FTS keyword fallback (disabled by default — embedding search handles semantics).
+	if e.config.EnableFTSFallback {
+		ftsQueries := expandQueryForFTS(req.Query)
+		for _, ftsQuery := range ftsQueries {
+			ftsResults, ftsErr := e.store.SearchFTSWithOptions(ctx, ftsQuery, entityID, candidateCount, opts)
+			if ftsErr != nil || len(ftsResults) == 0 {
 				continue
 			}
-			seenIDs[mem.ID] = true
-			// FTS results get a baseline similarity of 0.4 (above minScore but below strong HNSW matches)
-			score := scorer.Score(ScoringInput{
-				Similarity:     0.4,
-				CreatedAt:      mem.CreatedAt,
-				LastAccessedAt: mem.LastAccessedAt,
-				Stability:      mem.Stability,
-				Importance:     mem.Importance,
-				Confidence:     mem.Confidence,
-				AccessCount:    mem.AccessCount,
-			})
-			results = append(results, &QueryResult{
-				Memory: mem,
-				Score:  score,
-			})
-		}
-	}
-
-	// Type-aware scoring: boost memories whose type matches the query intent.
-	// E.g., "user's name" → boost IDENTITY, "future plans" → boost PLAN.
-	queryType := detectQueryType(req.Query)
-	if queryType != "" {
-		for _, r := range results {
-			if string(r.Memory.Type) == queryType {
-				r.Score.TotalScore += 0.05 // small boost to prioritize matching types
+			for _, mem := range ftsResults {
+				if seenIDs[mem.ID] {
+					continue
+				}
+				seenIDs[mem.ID] = true
+				score := scorer.Score(ScoringInput{
+					Similarity:     e.config.FTSBaselineSimilarity,
+					CreatedAt:      mem.CreatedAt,
+					LastAccessedAt: mem.LastAccessedAt,
+					Stability:      mem.Stability,
+					Importance:     mem.Importance,
+					Confidence:     mem.Confidence,
+					AccessCount:    mem.AccessCount,
+				})
+				results = append(results, &QueryResult{
+					Memory: mem,
+					Score:  score,
+				})
 			}
 		}
 	}
 
 	sortResultsByScore(results)
-	results = enforceDiversity(results, 0.9, e.store)
+	results = enforceDiversity(results, e.config.DiversityThreshold, e.store)
+
+	// Optional LLM re-ranking: use the LLM to re-rank results for better accuracy.
+	// This adds one LLM call per query but closes the semantic gap that embeddings miss
+	// (e.g., "boss" → "VP of Engineering").
+	if req.EnableLLMRerank && e.provider != nil && len(results) > 0 {
+		reranked, rerankErr := e.llmRerank(ctx, req.Query, results)
+		if rerankErr == nil {
+			results = reranked
+		}
+		// On error, silently fall back to embedding-only ordering
+	}
 
 	if len(results) > req.Limit {
 		results = results[:req.Limit]
@@ -777,6 +811,42 @@ func (e *Engine) Query(ctx context.Context, entityID string, req QueryRequest) (
 		}
 	}
 
+	return results, nil
+}
+
+// llmRerank uses the LLM provider to re-rank query results by relevance.
+func (e *Engine) llmRerank(ctx context.Context, query string, results []*QueryResult) ([]*QueryResult, error) {
+	candidates := make([]llm.RerankCandidate, len(results))
+	for i, r := range results {
+		candidates[i] = llm.RerankCandidate{
+			ID:      r.Memory.ID,
+			Content: r.Memory.Content,
+			Type:    string(r.Memory.Type),
+			Score:   r.Score.TotalScore,
+		}
+	}
+
+	resp, err := e.provider.RerankMemories(ctx, llm.RerankRequest{
+		Query:      query,
+		Candidates: candidates,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Map LLM scores back and blend with original scores
+	scoreMap := make(map[string]float64, len(resp.Rankings))
+	for _, r := range resp.Rankings {
+		scoreMap[r.ID] = r.Score
+	}
+	for _, r := range results {
+		if llmScore, ok := scoreMap[r.Memory.ID]; ok {
+			// Blend: 60% LLM relevance + 40% original embedding score
+			r.Score.TotalScore = 0.6*llmScore + 0.4*r.Score.TotalScore
+		}
+	}
+
+	sortResultsByScore(results)
 	return results, nil
 }
 
@@ -1077,7 +1147,7 @@ func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID strin
 
 	for _, sim := range similarMemories {
 		// Only ambiguous similarity zone — too similar means it's the same fact, too different means unrelated
-		if sim.Similarity < 0.5 || sim.Similarity > 0.85 {
+		if sim.Similarity < e.config.ReEvalSimilarityMin || sim.Similarity > e.config.ReEvalSimilarityMax {
 			continue
 		}
 		// Only high-value memory types
@@ -1085,7 +1155,7 @@ func (e *Engine) reEvaluateRelatedImportance(ctx context.Context, entityID strin
 			continue
 		}
 		// Only memories above importance threshold
-		if sim.Memory.Importance <= 0.5 {
+		if sim.Memory.Importance <= e.config.ReEvalImportanceMin {
 			continue
 		}
 		// Respect token budget

@@ -556,3 +556,59 @@ func (o *OpenAIProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 
 	return &result, nil
 }
+
+func (o *OpenAIProvider) RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
+	rerankSchema := openai.ResponseFormatJSONSchemaJSONSchemaParam{
+		Name:   "rerank_response",
+		Strict: openai.Bool(true),
+		Schema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"rankings": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"id":    map[string]interface{}{"type": "string"},
+							"score": map[string]interface{}{"type": "number"},
+						},
+						"required":             []string{"id", "score"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"rankings"},
+			"additionalProperties": false,
+		},
+	}
+
+	prompt := FormatRerankPrompt(req)
+	params := openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(o.model),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("You are a memory relevance ranker."),
+			openai.UserMessage(prompt),
+		},
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: rerankSchema},
+		},
+	}
+	if !o.tempFixed() {
+		params.Temperature = openai.Float(0.1)
+	}
+	resp, err := o.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI rerank failed: %w", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return nil, fmt.Errorf("OpenAI returned no choices")
+	}
+
+	var result RerankResponse
+	if err := json.Unmarshal([]byte(resp.Choices[0].Message.Content), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenAI rerank response: %w", err)
+	}
+
+	return &result, nil
+}

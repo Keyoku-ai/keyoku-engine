@@ -432,3 +432,45 @@ func (g *GeminiProvider) SummarizeGraph(ctx context.Context, req GraphSummaryReq
 
 	return &result, nil
 }
+
+func (g *GeminiProvider) RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error) {
+	model := g.client.GenerativeModel(g.model)
+	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"rankings": {
+				Type: genai.TypeArray,
+				Items: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"id":    {Type: genai.TypeString},
+						"score": {Type: genai.TypeNumber},
+					},
+					Required: []string{"id", "score"},
+				},
+			},
+		},
+		Required: []string{"rankings"},
+	}
+	model.SetTemperature(0.1)
+	model.SetTopP(0.8)
+
+	prompt := FormatRerankPrompt(req)
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		return nil, fmt.Errorf("Gemini rerank failed: %w", err)
+	}
+
+	text, err := g.extractText(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	var result RerankResponse
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse Gemini rerank response: %w", err)
+	}
+
+	return &result, nil
+}

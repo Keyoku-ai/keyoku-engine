@@ -329,6 +329,9 @@ func (m *mockProvider) AnalyzeHeartbeatContext(_ context.Context, _ llm.Heartbea
 func (m *mockProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
 	return &llm.GraphSummaryResponse{}, nil
 }
+func (m *mockProvider) RerankMemories(_ context.Context, _ llm.RerankRequest) (*llm.RerankResponse, error) {
+	return &llm.RerankResponse{}, nil
+}
 func (m *mockProvider) Name() string  { return "test" }
 func (m *mockProvider) Model() string { return "test" }
 

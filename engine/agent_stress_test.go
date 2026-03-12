@@ -109,6 +109,7 @@ type agentStressHarness struct {
 	dbPath         string
 	entityID       string
 	sessionCounter int
+	enableRerank   bool // when true, all queries use EnableLLMRerank
 	events         []capturedEvent
 	eventMu        sync.Mutex
 }
@@ -129,9 +130,19 @@ func newAgentStressHarnessWithProvider(t *testing.T, provider llm.Provider, prov
 		t.Fatal("OPENAI_API_KEY required for embeddings")
 	}
 
-	t.Logf("  using LLM provider: %s (%s)", providerName, provider.Model())
-
 	emb := embedder.NewOpenAI(apiKey, "text-embedding-3-small")
+	return newAgentStressHarnessWithStack(t, provider, providerName, emb, false)
+}
+
+// newAgentStressHarnessWithStack creates a harness with a specific LLM provider, embedder, and rerank flag.
+func newAgentStressHarnessWithStack(t *testing.T, provider llm.Provider, providerName string, emb embedder.Embedder, enableRerank bool) *agentStressHarness {
+	t.Helper()
+
+	rerankLabel := "rerank:off"
+	if enableRerank {
+		rerankLabel = "rerank:on"
+	}
+	t.Logf("  using LLM provider: %s (%s), embedder dims: %d, %s", providerName, provider.Model(), emb.Dimensions(), rerankLabel)
 
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "agent_stress.db")
@@ -149,13 +160,14 @@ func newAgentStressHarnessWithProvider(t *testing.T, provider llm.Provider, prov
 	engine := NewEngine(provider, emb, store, cfg)
 
 	h := &agentStressHarness{
-		t:        t,
-		engine:   engine,
-		store:    store,
-		provider: provider,
-		emb:      emb,
-		dbPath:   dbPath,
-		entityID: "agent-stress-user",
+		t:            t,
+		engine:       engine,
+		store:        store,
+		provider:     provider,
+		emb:          emb,
+		dbPath:       dbPath,
+		entityID:     "agent-stress-user",
+		enableRerank: enableRerank,
 	}
 
 	// Capture all events
@@ -195,8 +207,9 @@ func (h *agentStressHarness) addMessage(ctx context.Context, sessionID, content 
 
 func (h *agentStressHarness) query(ctx context.Context, queryStr string, limit int) ([]*QueryResult, error) {
 	return h.engine.Query(ctx, h.entityID, QueryRequest{
-		Query: queryStr,
-		Limit: limit,
+		Query:           queryStr,
+		Limit:           limit,
+		EnableLLMRerank: h.enableRerank,
 	})
 }
 
@@ -1545,6 +1558,201 @@ func TestStress_AgentCompareProviders(t *testing.T) {
 			reportJSON, _ := json.MarshalIndent(comparison, "", "  ")
 			os.WriteFile(reportPath, reportJSON, 0644)
 			t.Logf("\nComparison report saved to: %s", reportPath)
+		}
+	}
+}
+
+// =============================================================================
+// Full Stack Comparison Test (OpenAI/Gemini × Rerank On/Off)
+// =============================================================================
+
+// stackSpec defines a full stack configuration: LLM provider + embedder + rerank flag.
+type stackSpec struct {
+	name           string
+	llmProvider    string // "openai", "gemini"
+	llmModel       string
+	llmEnvKey      string
+	embProvider    string // "openai", "gemini"
+	embModel       string
+	embEnvKey      string
+	enableRerank   bool
+}
+
+// runAgentStressForStack runs all 15 phases with a specific stack config.
+func runAgentStressForStack(t *testing.T, spec stackSpec) *agentStressReport {
+	t.Helper()
+
+	// Create LLM provider
+	llmKey := os.Getenv(spec.llmEnvKey)
+	if llmKey == "" {
+		t.Skipf("  skipping %s: %s not set", spec.name, spec.llmEnvKey)
+		return nil
+	}
+
+	var provider llm.Provider
+	var err error
+	switch spec.llmProvider {
+	case "openai":
+		provider, err = llm.NewOpenAIProvider(llmKey, spec.llmModel, "")
+	case "gemini":
+		provider, err = llm.NewGeminiProvider(llmKey, spec.llmModel)
+	default:
+		t.Fatalf("unknown LLM provider: %s", spec.llmProvider)
+	}
+	if err != nil {
+		t.Fatalf("  failed to create LLM provider %s: %v", spec.name, err)
+	}
+
+	// Create embedder
+	embKey := os.Getenv(spec.embEnvKey)
+	if embKey == "" {
+		t.Skipf("  skipping %s: %s not set for embeddings", spec.name, spec.embEnvKey)
+		return nil
+	}
+
+	var emb embedder.Embedder
+	switch spec.embProvider {
+	case "openai":
+		emb = embedder.NewOpenAI(embKey, spec.embModel)
+	case "gemini":
+		emb, err = embedder.NewGemini(embKey, spec.embModel)
+		if err != nil {
+			t.Fatalf("  failed to create Gemini embedder: %v", err)
+		}
+	default:
+		t.Fatalf("unknown embedder provider: %s", spec.embProvider)
+	}
+
+	h := newAgentStressHarnessWithStack(t, provider, spec.name, emb, spec.enableRerank)
+	defer h.close()
+	ctx := context.Background()
+	fullStart := time.Now()
+
+	report := &agentStressReport{}
+
+	report.Identity = h.phaseIdentity(ctx)
+	report.Preferences = h.phasePreferences(ctx)
+	report.Relationships = h.phaseRelationships(ctx)
+	report.Temporal = h.phaseTemporal(ctx)
+	report.Conflicts = h.phaseConflicts(ctx)
+	report.Contradictions = h.phaseContradictions(ctx)
+	report.MultiSession = h.phaseMultiSession(ctx)
+	report.Importance = h.phaseImportance(ctx)
+	report.Dedup = h.phaseDedup(ctx)
+	report.GraphDeep = h.phaseGraphDeep(ctx)
+	report.EntityResolution = h.phaseEntityResolution(ctx)
+	report.Retrieval = h.phaseRetrieval(ctx)
+	report.Concurrent = h.phaseConcurrent(ctx)
+	report.Lifecycle = h.phaseLifecycle(ctx)
+	report.EventAudit = h.phaseEventAudit(ctx)
+
+	report.Duration = time.Since(fullStart).String()
+
+	phases := []*phaseReport{
+		report.Identity, report.Preferences, report.Relationships,
+		report.Temporal, report.Conflicts, report.Contradictions,
+		report.MultiSession, report.Importance, report.Dedup,
+		report.GraphDeep, report.EntityResolution, report.Retrieval,
+		report.Concurrent, report.Lifecycle, report.EventAudit,
+	}
+	for _, p := range phases {
+		for _, c := range p.Checks {
+			report.TotalChecks++
+			if c.Pass {
+				report.PassedChecks++
+			}
+		}
+	}
+
+	failedPhases := 0
+	hardPhases := []*phaseReport{
+		report.Identity, report.Preferences, report.MultiSession,
+		report.Retrieval, report.Concurrent, report.Lifecycle,
+	}
+	for _, p := range hardPhases {
+		if !p.AllPass {
+			failedPhases++
+		}
+	}
+
+	switch {
+	case failedPhases == 0:
+		report.Verdict = "PASS"
+	case failedPhases <= 2:
+		report.Verdict = "WARN"
+	default:
+		report.Verdict = "FAIL"
+	}
+
+	return report
+}
+
+// TestStress_AgentCompareStacks runs the full agent stress test with 4 stack configurations:
+//   - OpenAI LLM + OpenAI Embedder (rerank off)
+//   - OpenAI LLM + OpenAI Embedder (rerank on)
+//   - Gemini LLM + Gemini Embedder (rerank off)
+//   - Gemini LLM + Gemini Embedder (rerank on)
+func TestStress_AgentCompareStacks(t *testing.T) {
+	stacks := []stackSpec{
+		{
+			name: "OpenAI+OpenAI/rerank-off", llmProvider: "openai", llmModel: "gpt-5-mini",
+			llmEnvKey: "OPENAI_API_KEY", embProvider: "openai", embModel: "text-embedding-3-small",
+			embEnvKey: "OPENAI_API_KEY", enableRerank: false,
+		},
+		{
+			name: "OpenAI+OpenAI/rerank-on", llmProvider: "openai", llmModel: "gpt-5-mini",
+			llmEnvKey: "OPENAI_API_KEY", embProvider: "openai", embModel: "text-embedding-3-small",
+			embEnvKey: "OPENAI_API_KEY", enableRerank: true,
+		},
+		{
+			name: "Gemini+Gemini/rerank-off", llmProvider: "gemini", llmModel: "gemini-3.1-flash-lite-preview",
+			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "text-embedding-004",
+			embEnvKey: "GEMINI_API_KEY", enableRerank: false,
+		},
+		{
+			name: "Gemini+Gemini/rerank-on", llmProvider: "gemini", llmModel: "gemini-3.1-flash-lite-preview",
+			llmEnvKey: "GEMINI_API_KEY", embProvider: "gemini", embModel: "text-embedding-004",
+			embEnvKey: "GEMINI_API_KEY", enableRerank: true,
+		},
+	}
+
+	type stackResult struct {
+		Name   string
+		Report *agentStressReport
+	}
+	var results []stackResult
+
+	for _, spec := range stacks {
+		t.Run(spec.name, func(t *testing.T) {
+			t.Logf("=== Testing stack: %s ===", spec.name)
+			report := runAgentStressForStack(t, spec)
+			if report != nil {
+				results = append(results, stackResult{Name: spec.name, Report: report})
+				t.Logf("  VERDICT: %s (%d/%d) in %s",
+					report.Verdict, report.PassedChecks, report.TotalChecks, report.Duration)
+			}
+		})
+	}
+
+	// Print comparison table
+	if len(results) > 0 {
+		t.Log("\n=== STACK COMPARISON (LLM+Embedder/Rerank) ===")
+		t.Log("Stack                              | Verdict | Passed | Total | Duration")
+		t.Log("-----------------------------------|---------|--------|-------|--------")
+		for _, r := range results {
+			t.Logf("%-35s | %-7s | %3d    | %3d   | %s",
+				r.Name, r.Report.Verdict, r.Report.PassedChecks, r.Report.TotalChecks, r.Report.Duration)
+		}
+
+		// Save comparison report
+		if reportPath := os.Getenv("STRESS_REPORT_PATH"); reportPath != "" {
+			comparison := make(map[string]*agentStressReport)
+			for _, r := range results {
+				comparison[r.Name] = r.Report
+			}
+			reportJSON, _ := json.MarshalIndent(comparison, "", "  ")
+			os.WriteFile(reportPath, reportJSON, 0644)
+			t.Logf("\nStack comparison report saved to: %s", reportPath)
 		}
 	}
 }

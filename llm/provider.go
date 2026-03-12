@@ -41,6 +41,7 @@ type Provider interface {
 	PrioritizeActions(ctx context.Context, req ActionPriorityRequest) (*ActionPriorityResponse, error)
 	AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error)
 	SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error)
+	RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error)
 	Name() string
 	Model() string
 }
@@ -672,4 +673,34 @@ func FormatStateExtractionPrompt(req StateExtractionRequest) string {
 		}
 	}
 	return fmt.Sprintf(stateExtractionPrompt, req.SchemaName, string(schemaJSON), currentStateStr, transitionRulesStr, agentID, contextStr, wrapUserContent(req.Content))
+}
+
+const rerankPrompt = `You are a memory relevance ranker. Given a query and candidate memories, score each memory's relevance to the query.
+
+Query: %s
+
+Candidate memories:
+%s
+
+For each candidate, assign a relevance score from 0.0 to 1.0:
+- 1.0 = directly answers the query
+- 0.7-0.9 = highly relevant
+- 0.4-0.6 = somewhat relevant
+- 0.1-0.3 = tangentially related
+- 0.0 = not relevant
+
+Return ONLY valid JSON with this structure:
+{
+  "rankings": [{"id": "...", "score": 0.0-1.0}, ...]
+}
+
+Return ALL candidates with scores. No markdown, no explanation.`
+
+// FormatRerankPrompt formats the re-ranking prompt.
+func FormatRerankPrompt(req RerankRequest) string {
+	candidatesStr := ""
+	for _, c := range req.Candidates {
+		candidatesStr += fmt.Sprintf("- ID: %s | Type: %s | Content: %s\n", c.ID, c.Type, sanitizeForPrompt(c.Content))
+	}
+	return fmt.Sprintf(rerankPrompt, sanitizeForPrompt(req.Query), candidatesStr)
 }

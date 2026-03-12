@@ -198,6 +198,31 @@ type GraphSummaryResponse struct {
 	Confidence float64 `json:"confidence"`
 }
 
+// RerankRequest contains input for LLM-based re-ranking of search results.
+type RerankRequest struct {
+	Query      string            `json:"query"`
+	Candidates []RerankCandidate `json:"candidates"`
+}
+
+// RerankCandidate represents a memory candidate for re-ranking.
+type RerankCandidate struct {
+	ID      string  `json:"id"`
+	Content string  `json:"content"`
+	Type    string  `json:"type"`
+	Score   float64 `json:"score"`
+}
+
+// RerankResponse contains the LLM's re-ranked results.
+type RerankResponse struct {
+	Rankings []RerankResult `json:"rankings"`
+}
+
+// RerankResult represents a single re-ranked result.
+type RerankResult struct {
+	ID    string  `json:"id"`
+	Score float64 `json:"score"`
+}
+
 // StateExtractionRequest contains input for automatic state extraction.
 type StateExtractionRequest struct {
 	Content          string
