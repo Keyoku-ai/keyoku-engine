@@ -147,10 +147,10 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 		}
 	case "act":
 		return HeartbeatParams{
-			SignalCooldownNormal: 1 * time.Hour,
-			SignalCooldownLow:    2 * time.Hour,
-			NudgeAfterSilence:    2 * time.Hour,
-			MaxNudgesPerDay:      6,
+			SignalCooldownNormal: 10 * time.Minute,
+			SignalCooldownLow:    30 * time.Minute,
+			NudgeAfterSilence:    30 * time.Minute,
+			MaxNudgesPerDay:      24,
 			NudgeMaxInterval: 48 * time.Hour,
 		}
 	default: // "suggest"
@@ -1002,7 +1002,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		if highestTier == TierLow {
 			cooldown = params.SignalCooldownLow
 		} else if highestTier == TierElevated {
-			cooldown = time.Hour
+			cooldown = 15 * time.Minute
 		}
 		cooldown = time.Duration(float64(cooldown) * multiplier)
 

@@ -293,8 +293,7 @@ explanation, _ := k.Graph().ExplainConnection(ctx, "owner-id", aliceID, bobID)
 | Provider | Extraction Model | Embedding | Custom Base URL |
 |----------|-----------------|-----------|-----------------|
 | OpenAI | gpt-5-mini (default) | text-embedding-3-small | Yes |
-| Anthropic | claude-haiku-4-5-20251001 | — | Yes |
-| Google Gemini | gemini-3-flash-preview | — | — |
+| Google Gemini | gemini-2.5-flash | gemini-embedding-001 | — |
 
 Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 
@@ -303,7 +302,7 @@ Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 ```go
 keyoku.Config{
     DBPath:             "./keyoku.db",
-    ExtractionProvider: "openai",        // "openai", "anthropic", "google"
+    ExtractionProvider: "openai",        // "openai", "google"
     ExtractionModel:    "gpt-5-mini",
     OpenAIAPIKey:       "sk-...",
     EmbeddingModel:     "text-embedding-3-small",
