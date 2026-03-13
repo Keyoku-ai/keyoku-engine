@@ -44,6 +44,37 @@ type WatcherConfig struct {
 	HeartbeatOpts []HeartbeatOption
 }
 
+// IntervalFactors describes each factor that influenced the tick interval.
+type IntervalFactors struct {
+	BaseMs         int64   `json:"base_ms"`
+	FinalMs        int64   `json:"final_ms"`
+	TimePeriod     string  `json:"time_period"`
+	TimePeriodMult float64 `json:"time_period_mult"`
+	RecentActMult  float64 `json:"recent_act_mult"`
+	RecentActAgoMs *int64  `json:"recent_act_ago_ms,omitempty"`
+	SignalCount    int     `json:"signal_count"`
+	SignalMult     float64 `json:"signal_mult"`
+	VelocityHigh   bool    `json:"velocity_high"`
+	VelocityMult   float64 `json:"velocity_mult"`
+	Clamped        string  `json:"clamped,omitempty"` // "min", "max", or ""
+}
+
+// WatcherStatus is the full status snapshot returned by Status().
+type WatcherStatus struct {
+	Running       bool            `json:"running"`
+	Adaptive      bool            `json:"adaptive"`
+	NextTickAt    *time.Time      `json:"next_tick_at,omitempty"`
+	IntervalMs    int64           `json:"current_interval_ms"`
+	BaseMs        int64           `json:"base_interval_ms"`
+	MinMs         int64           `json:"min_interval_ms"`
+	MaxMs         int64           `json:"max_interval_ms"`
+	Factors       *IntervalFactors `json:"factors,omitempty"`
+	LastActAt     *time.Time      `json:"last_act_at,omitempty"`
+	LastDecision  string          `json:"last_decision"`
+	LastCheckAt   *time.Time      `json:"last_check_at,omitempty"`
+	Entities      []string        `json:"entities"`
+}
+
 // DefaultWatcherConfig returns a default watcher configuration.
 func DefaultWatcherConfig() WatcherConfig {
 	return WatcherConfig{
@@ -67,8 +98,12 @@ type Watcher struct {
 	deliverer Deliverer
 
 	// Adaptive interval state
-	lastResult  *HeartbeatResult
-	lastActTime time.Time
+	lastResult   *HeartbeatResult
+	lastActTime  time.Time
+	nextTickAt   time.Time
+	lastFactors  *IntervalFactors
+	lastCheckAt  time.Time
+	lastDecision string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -177,6 +212,68 @@ func (w *Watcher) WatchedEntities() []string {
 	return ids
 }
 
+// Status returns a full snapshot of the watcher's current state.
+func (w *Watcher) Status() WatcherStatus {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	entities := make([]string, 0, len(w.entityIDs))
+	for id := range w.entityIDs {
+		entities = append(entities, id)
+	}
+
+	base := w.config.BaseInterval
+	if base <= 0 {
+		base = 5 * time.Minute
+	}
+	minI := w.config.MinInterval
+	if minI <= 0 {
+		minI = 1 * time.Minute
+	}
+	maxI := w.config.MaxInterval
+	if maxI <= 0 {
+		maxI = 30 * time.Minute
+	}
+
+	s := WatcherStatus{
+		Running:  true,
+		Adaptive: w.config.Adaptive,
+		BaseMs:   base.Milliseconds(),
+		MinMs:    minI.Milliseconds(),
+		MaxMs:    maxI.Milliseconds(),
+		Factors:  w.lastFactors,
+		Entities: entities,
+	}
+
+	if w.lastFactors != nil {
+		s.IntervalMs = w.lastFactors.FinalMs
+	} else if w.config.Adaptive {
+		s.IntervalMs = base.Milliseconds()
+	} else {
+		s.IntervalMs = w.config.Interval.Milliseconds()
+	}
+
+	if !w.nextTickAt.IsZero() {
+		t := w.nextTickAt
+		s.NextTickAt = &t
+	}
+	if !w.lastActTime.IsZero() {
+		t := w.lastActTime
+		s.LastActAt = &t
+	}
+	if !w.lastCheckAt.IsZero() {
+		t := w.lastCheckAt
+		s.LastCheckAt = &t
+	}
+
+	s.LastDecision = w.lastDecision
+	if s.LastDecision == "" {
+		s.LastDecision = "none"
+	}
+
+	return s
+}
+
 func (w *Watcher) run() {
 	defer w.wg.Done()
 
@@ -216,6 +313,14 @@ func (w *Watcher) computeNextInterval() time.Duration {
 		base = 5 * time.Minute
 	}
 
+	f := &IntervalFactors{
+		BaseMs:         base.Milliseconds(),
+		RecentActMult:  1.0,
+		TimePeriodMult: 1.0,
+		SignalMult:     1.0,
+		VelocityMult:   1.0,
+	}
+
 	interval := float64(base)
 
 	// Factor 1: Time since last action — check sooner after acting for follow-up
@@ -226,27 +331,38 @@ func (w *Watcher) computeNextInterval() time.Duration {
 
 	if !lastAct.IsZero() {
 		sinceAct := time.Since(lastAct)
+		agoMs := sinceAct.Milliseconds()
+		f.RecentActAgoMs = &agoMs
 		if sinceAct < 10*time.Minute {
+			f.RecentActMult = 0.5
 			interval *= 0.5
 		}
 	}
 
 	// Factor 2: Time of day
 	period := w.keyoku.currentTimePeriod()
-	interval *= timePeriodCooldownMultiplier(period)
+	mult := timePeriodCooldownMultiplier(period)
+	f.TimePeriod = string(period)
+	f.TimePeriodMult = mult
+	interval *= mult
 
 	// Factor 3: Signal density from last check
 	if lastResult != nil {
 		signalCount := countSignals(lastResult)
+		f.SignalCount = signalCount
 		if signalCount > 5 {
-			interval *= 0.5 // high signal density = check more often
+			f.SignalMult = 0.5
+			interval *= 0.5
 		} else if signalCount == 0 {
-			interval *= 1.5 // quiet = check less
+			f.SignalMult = 1.5
+			interval *= 1.5
 		}
 	}
 
 	// Factor 4: Memory velocity
 	if lastResult != nil && lastResult.MemoryVelocityHigh {
+		f.VelocityHigh = true
+		f.VelocityMult = 0.5
 		interval *= 0.5
 	}
 
@@ -262,11 +378,23 @@ func (w *Watcher) computeNextInterval() time.Duration {
 
 	result := time.Duration(interval)
 	if result < minInterval {
+		f.Clamped = "min"
 		result = minInterval
 	}
 	if result > maxInterval {
+		f.Clamped = "max"
 		result = maxInterval
 	}
+
+	f.FinalMs = result.Milliseconds()
+
+	// Store factors and next tick time
+	now := time.Now()
+	nextTick := now.Add(result)
+	w.mu.Lock()
+	w.lastFactors = f
+	w.nextTickAt = nextTick
+	w.mu.Unlock()
 
 	return result
 }
@@ -313,6 +441,12 @@ func (w *Watcher) checkAll() {
 		// Cache last result for adaptive interval computation
 		w.mu.Lock()
 		w.lastResult = result
+		w.lastCheckAt = time.Now()
+		if result.ShouldAct {
+			w.lastDecision = "act"
+		} else {
+			w.lastDecision = "skip"
+		}
 		w.mu.Unlock()
 
 		if !result.ShouldAct {

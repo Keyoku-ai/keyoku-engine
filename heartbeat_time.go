@@ -48,6 +48,9 @@ func (k *Keyoku) currentTimePeriod() string {
 	case hour >= 21 && hour < 23:
 		return PeriodLateNight
 	default: // 23-7
+		if !k.quietHours.Enabled {
+			return PeriodLateNight // no quiet hours = treat as late night
+		}
 		return PeriodQuiet
 	}
 }

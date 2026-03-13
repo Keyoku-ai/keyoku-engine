@@ -63,6 +63,60 @@ func main() {
 	}
 	defer k.Close()
 
+	// Auto-start watcher if configured
+	if cfg.WatcherAutoStart != nil && *cfg.WatcherAutoStart {
+		wcfg := keyoku.WatcherConfig{
+			Interval: 5 * time.Minute,
+		}
+
+		// Parse entity IDs
+		if cfg.WatcherEntityIDs != "" {
+			for _, id := range strings.Split(cfg.WatcherEntityIDs, ",") {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					wcfg.EntityIDs = append(wcfg.EntityIDs, id)
+				}
+			}
+		}
+		if len(wcfg.EntityIDs) == 0 {
+			wcfg.EntityIDs = []string{"default"}
+		}
+
+		// Adaptive mode
+		if cfg.AdaptiveHeartbeat != nil && *cfg.AdaptiveHeartbeat {
+			wcfg.Adaptive = true
+			if cfg.WatcherBaseInterval > 0 {
+				wcfg.BaseInterval = time.Duration(cfg.WatcherBaseInterval) * time.Millisecond
+			} else {
+				wcfg.BaseInterval = 5 * time.Minute
+			}
+			if cfg.WatcherMinInterval > 0 {
+				wcfg.MinInterval = time.Duration(cfg.WatcherMinInterval) * time.Millisecond
+			} else {
+				wcfg.MinInterval = 1 * time.Minute
+			}
+			if cfg.WatcherMaxInterval > 0 {
+				wcfg.MaxInterval = time.Duration(cfg.WatcherMaxInterval) * time.Millisecond
+			} else {
+				wcfg.MaxInterval = 30 * time.Minute
+			}
+		}
+
+		// Delivery config
+		if cfg.DeliveryMethod != "" {
+			wcfg.Delivery = &keyoku.DeliveryConfig{
+				Method:    cfg.DeliveryMethod,
+				Command:   cfg.DeliveryCommand,
+				Channel:   cfg.DeliveryChannel,
+				Recipient: cfg.DeliveryRecipient,
+			}
+		}
+
+		k.StartWatcher(wcfg)
+		log.Printf("  watcher: auto-started (entities: %v, adaptive: %v, delivery: %v)",
+			wcfg.EntityIDs, wcfg.Adaptive, wcfg.Delivery != nil)
+	}
+
 	// Create SSE hub and bridge events
 	hub := NewSSEHub()
 	hub.BridgeKeyokuEvents(k)
@@ -101,6 +155,7 @@ func main() {
 	mux.HandleFunc("POST /api/v1/heartbeat/record-message", handlers.HandleRecordHeartbeatMessage)
 
 	// Watcher
+	mux.HandleFunc("GET /api/v1/watcher/status", handlers.HandleWatcherStatus)
 	mux.HandleFunc("POST /api/v1/watcher/start", handlers.HandleWatcherStart)
 	mux.HandleFunc("POST /api/v1/watcher/stop", handlers.HandleWatcherStop)
 	mux.HandleFunc("POST /api/v1/watcher/watch", handlers.HandleWatcherWatch)
