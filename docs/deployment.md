@@ -47,6 +47,27 @@ This guide covers deploying keyoku-server in production environments.
 | `KEYOKU_QUIET_HOUR_END` | `7` | Hour (0-23) when quiet hours end. |
 | `KEYOKU_QUIET_HOURS_TIMEZONE` | `America/Los_Angeles` | IANA timezone for quiet hours. |
 
+### Heartbeat Delivery
+
+| Variable | Default | Description |
+|---|---|---|
+| `KEYOKU_DELIVERY_METHOD` | *(none)* | Delivery method for heartbeat messages. Currently supports `cli`. |
+| `KEYOKU_DELIVERY_COMMAND` | `openclaw` | CLI command to execute for delivery (supports multi-word, e.g. `docker exec kumo openclaw`). |
+| `KEYOKU_DELIVERY_CHANNEL` | *(none)* | Delivery channel (e.g. `telegram`, `slack`). |
+| `KEYOKU_DELIVERY_RECIPIENT` | *(none)* | Delivery recipient ID (e.g. `-4970078838` for Telegram group). |
+| `KEYOKU_DELIVERY_SESSION_ID` | *(auto-derived)* | Explicit session ID for routing (e.g. `telegram:group:-4970078838`). If empty, derived from `{channel}:group:{recipient}`. |
+| `KEYOKU_ADAPTIVE_HEARTBEAT` | `false` | Enable adaptive tick intervals based on time-of-day, signal velocity, and recent activity. |
+
+### Watcher Auto-Start
+
+| Variable | Default | Description |
+|---|---|---|
+| `KEYOKU_WATCHER_AUTO_START` | `false` | Start the heartbeat watcher automatically on server boot. |
+| `KEYOKU_WATCHER_ENTITY_IDS` | *(none)* | Comma-separated entity IDs to watch on auto-start. |
+| `KEYOKU_WATCHER_BASE_INTERVAL` | `300000` | Base tick interval in milliseconds (5 minutes). |
+| `KEYOKU_WATCHER_MIN_INTERVAL` | `60000` | Minimum tick interval in milliseconds (1 minute). |
+| `KEYOKU_WATCHER_MAX_INTERVAL` | `900000` | Maximum tick interval in milliseconds (15 minutes). |
+
 ### Config File
 
 Instead of environment variables, you can pass a JSON config file via the `--config` flag:

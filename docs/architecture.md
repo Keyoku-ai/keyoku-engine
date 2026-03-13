@@ -44,11 +44,17 @@ This document describes the internal architecture of keyoku-engine.
 The public API surface. All external consumers import this package.
 
 - **keyoku.go** — `Keyoku` struct: the main entry point. Wraps engine, embedder, LLM, storage, and scheduler. Exposes `Remember()`, `Search()`, `ListMemories()`, `DeleteMemory()`, etc.
-- **heartbeat.go** — `HeartbeatCheck()` (zero-token local query) and `HeartbeatContext()` (combined heartbeat + semantic search + optional LLM analysis).
+- **heartbeat.go** — Types, constants, and `HeartbeatCheck()` orchestrator.
+- **heartbeat_options.go** — `WithX()` option functions for heartbeat configuration.
+- **heartbeat_decide.go** — `evaluateShouldAct()`, signal classification, fingerprinting, delta detection.
+- **heartbeat_nudge.go** — `evaluateNudge()`, content filtering, topic repeat suppression.
+- **heartbeat_time.go** — Time-of-day awareness, period classification, cooldown multipliers.
 - **schedule.go** — Cron-tagged memory scheduling with acknowledgment tracking.
 - **events.go** — Server-Sent Events (SSE) for real-time memory change notifications.
 - **config.go** — `Config` struct with all knobs and `DefaultConfig()`.
-- **watcher.go** — File watcher for hot-reloading configuration.
+- **watcher.go** — Heartbeat watcher with adaptive tick intervals and delivery integration.
+- **delivery.go** — `DeliveryConfig` and `Deliverer` interface for heartbeat message delivery.
+- **delivery_cli.go** — CLI-based deliverer (shells out to OpenClaw or similar CLI).
 - **patterns.go** — Regex patterns for date/time extraction from natural language.
 
 ### `engine/`
@@ -73,7 +79,19 @@ Core memory processing pipeline:
 Persistence layer:
 
 - **interface.go** — `Store` interface defining all storage operations.
-- **sqlite.go** — Pure-Go SQLite implementation (WAL mode, no CGO).
+- **sqlite.go** — Core `SQLiteStore` struct, constructor, `Close`, `Ping`, `ExecRaw`.
+- **sqlite_migrate.go** — Schema migrations and index rebuilds.
+- **sqlite_memory.go** — CRUD operations for memories.
+- **sqlite_vector.go** — Vector search (HNSW), FTS, embedding decode.
+- **sqlite_queries.go** — Complex queries: recent, stale, aggregate stats, sampling.
+- **sqlite_entity.go** — Entity CRUD, alias management, mentions.
+- **sqlite_relationship.go** — Relationship CRUD, evidence tracking, path queries.
+- **sqlite_schema.go** — Custom schemas and extraction results.
+- **sqlite_agentstate.go** — Agent state persistence and history.
+- **sqlite_team.go** — Team management and membership.
+- **sqlite_heartbeat.go** — Heartbeat actions, nudge tracking, topic surfacing, message history.
+- **sqlite_session.go** — Session message storage.
+- **sqlite_helpers.go** — Shared scan functions, state transitions, batch operations.
 - **models.go** — Data models: `Memory`, `Entity`, `Relationship`, `Team`, etc.
 - **json_types.go** — JSON serialization helpers for SQLite columns.
 - **errors.go** — Typed storage errors.
@@ -83,6 +101,7 @@ Persistence layer:
 LLM provider abstraction:
 
 - **provider.go** — `Provider` interface and auto-detection logic.
+- **schemas.go** — Canonical schema definitions shared across all providers.
 - **openai.go** — OpenAI implementation (GPT-4o-mini default).
 - **anthropic.go** — Anthropic/Claude implementation.
 - **gemini.go** — Google Gemini implementation.
@@ -127,8 +146,14 @@ Background maintenance:
 HTTP server binary:
 
 - **main.go** — Server startup, signal handling, graceful shutdown.
-- **handlers.go** — HTTP handlers for all API endpoints.
-- **config.go** — Server-specific config (port, CORS, session token).
+- **handlers.go** — Shared helpers (`writeJSON`, `writeError`, `decodeBody`, etc.) and `Handlers` struct.
+- **handlers_memory.go** — Memory CRUD and search handlers.
+- **handlers_heartbeat.go** — Heartbeat check, context, and message recording.
+- **handlers_schedule.go** — Schedule CRUD handlers.
+- **handlers_watcher.go** — Watcher start/stop/watch/unwatch handlers.
+- **handlers_team.go** — Team management, stats, health handlers.
+- **config.go** — Server-specific config (port, CORS, delivery, watcher settings).
+- **validate.go** — Input validation (IDs, content, query params).
 - **sse.go** — SSE hub for real-time event streaming.
 
 ## Data Flow

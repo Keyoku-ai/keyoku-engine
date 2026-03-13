@@ -4,7 +4,23 @@ All notable changes to keyoku-engine will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.3.0] - 2026-03-13
+
+### Added
+- **Keyoku-driven heartbeat with CLI delivery** — heartbeat watcher now delivers messages autonomously via CLI (e.g., OpenClaw → Telegram) without requiring external orchestration
+- Session ID routing for delivery (`--session-id` flag, auto-derived from channel + recipient)
+- Adaptive tick intervals (time-of-day multipliers, signal velocity, cooldown after action)
+- Quiet hours support with timezone-aware scheduling
+- Watcher auto-start configuration via env vars and config file
+- Cross-compiled release binaries (linux/darwin, amd64/arm64)
+
+### Changed
+- Split oversized files for maintainability: `sqlite.go` → 12 files, `heartbeat.go` → 5 files, `handlers.go` → 6 files
+- Deduplicated LLM provider schemas into shared `llm/schemas.go`
+- Added input validation layer (`validate.go`)
+- Fixed `.gitignore` pattern that was excluding `cmd/keyoku-server/` directory
+
+## [0.2.5] - 2026-03-10
 
 ### Added
 - End-to-end stress tests and query expansion functionality

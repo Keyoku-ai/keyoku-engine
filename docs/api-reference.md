@@ -91,6 +91,7 @@ Semantic search across stored memories.
 |--------|----------|-------------|
 | `POST` | `/api/v1/heartbeat/check` | Zero-token heartbeat check (no LLM calls) |
 | `POST` | `/api/v1/heartbeat/context` | Combined heartbeat + semantic search + optional LLM analysis |
+| `POST` | `/api/v1/heartbeat/message` | Record a heartbeat message (for response tracking) |
 
 ### POST /api/v1/heartbeat/check
 
@@ -184,7 +185,7 @@ Combined endpoint returning heartbeat signals, relevant memories, and optional L
 
 ## Watcher
 
-Proactive monitoring with SSE push notifications.
+Proactive heartbeat monitoring with adaptive tick intervals and optional message delivery.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -192,6 +193,31 @@ Proactive monitoring with SSE push notifications.
 | `POST` | `/api/v1/watcher/stop` | Stop the watcher |
 | `POST` | `/api/v1/watcher/watch` | Add an entity to watch |
 | `POST` | `/api/v1/watcher/unwatch` | Remove an entity from watch |
+
+### POST /api/v1/watcher/start
+
+Start the heartbeat watcher with optional delivery configuration.
+
+```json
+{
+  "entity_ids": ["user-123"],
+  "base_interval_ms": 300000,
+  "min_interval_ms": 60000,
+  "max_interval_ms": 900000,
+  "adaptive": true,
+  "delivery": {
+    "method": "cli",
+    "command": "openclaw",
+    "channel": "telegram",
+    "recipient": "-4970078838",
+    "session_id": "telegram:group:-4970078838"
+  }
+}
+```
+
+- `adaptive`: Enable dynamic tick intervals based on time-of-day, signal count, and recent activity.
+- `delivery.session_id`: If omitted, auto-derived as `{channel}:group:{recipient}`.
+- The watcher runs heartbeat checks on each tick and delivers messages via the configured CLI when `should_act` is true.
 
 ---
 
