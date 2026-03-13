@@ -145,7 +145,7 @@ func New(cfg Config) (*Keyoku, error) {
 	switch embProvider {
 	case "gemini", "google":
 		var embErr error
-		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel)
+		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
 		if embErr != nil {
 			return nil, fmt.Errorf("failed to create Gemini embedder: %w", embErr)
 		}

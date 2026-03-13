@@ -105,7 +105,7 @@ func newRecallHarness(t *testing.T) *heartbeatRecallHarness {
 
 	if geminiKey != "" {
 		var err error
-		emb, err = embedder.NewGemini(geminiKey, "gemini-embedding-001")
+		emb, err = embedder.NewGemini(geminiKey, "gemini-embedding-001", 0)
 		if err != nil {
 			t.Fatalf("failed to create Gemini embedder: %v", err)
 		}

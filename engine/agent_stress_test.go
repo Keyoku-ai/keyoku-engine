@@ -1610,7 +1610,7 @@ func runAgentStressForStack(t *testing.T, spec stackSpec) *agentStressReport {
 	case "openai":
 		emb = embedder.NewOpenAI(embKey, spec.embModel)
 	case "gemini":
-		emb, err = embedder.NewGemini(embKey, spec.embModel)
+		emb, err = embedder.NewGemini(embKey, spec.embModel, 0)
 		if err != nil {
 			t.Fatalf("  failed to create Gemini embedder: %v", err)
 		}

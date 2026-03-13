@@ -18,13 +18,18 @@ type GeminiEmbedder struct {
 }
 
 // NewGemini creates a Gemini embedder using the google.golang.org/genai SDK.
-func NewGemini(apiKey, model string) (*GeminiEmbedder, error) {
+// If overrideDims > 0, the API is asked to truncate output to that many dimensions
+// (via OutputDimensionality), and the HNSW index is sized accordingly.
+func NewGemini(apiKey, model string, overrideDims int) (*GeminiEmbedder, error) {
 	if model == "" {
 		model = "gemini-embedding-001"
 	}
 	dims := 3072 // gemini-embedding-001 default
 	if model == "text-embedding-004" {
 		dims = 768
+	}
+	if overrideDims > 0 {
+		dims = overrideDims
 	}
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
@@ -57,7 +62,12 @@ func (g *GeminiEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		contents[i] = genai.NewContentFromText(t, "")
 	}
 
-	resp, err := g.client.Models.EmbedContent(ctx, g.model, contents, nil)
+	var ecCfg *genai.EmbedContentConfig
+	if g.dims > 0 {
+		od := int32(g.dims)
+		ecCfg = &genai.EmbedContentConfig{OutputDimensionality: &od}
+	}
+	resp, err := g.client.Models.EmbedContent(ctx, g.model, contents, ecCfg)
 	if err != nil {
 		return nil, fmt.Errorf("Gemini embedding failed: %w", err)
 	}

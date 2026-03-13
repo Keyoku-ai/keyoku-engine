@@ -23,8 +23,9 @@ type ServerConfig struct {
 	OpenAIBaseURL      string `json:"openai_base_url"`
 	AnthropicBaseURL   string `json:"anthropic_base_url"`
 	EmbeddingBaseURL   string `json:"embedding_base_url"`
-	EmbeddingProvider  string `json:"embedding_provider"`
-	EmbeddingModel     string `json:"embedding_model"`
+	EmbeddingProvider   string `json:"embedding_provider"`
+	EmbeddingModel      string `json:"embedding_model"`
+	EmbeddingDimensions int    `json:"embedding_dimensions"`
 	SchedulerEnabled   *bool  `json:"scheduler_enabled"`
 	QuietHoursEnabled  *bool  `json:"quiet_hours_enabled"`
 	QuietHourStart     *int   `json:"quiet_hour_start"`
@@ -99,6 +100,11 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("KEYOKU_EMBEDDING_MODEL"); v != "" {
 		cfg.EmbeddingModel = v
+	}
+	if v := os.Getenv("KEYOKU_EMBEDDING_DIMENSIONS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.EmbeddingDimensions = n
+		}
 	}
 	if v := os.Getenv("OPENAI_BASE_URL"); v != "" {
 		cfg.OpenAIBaseURL = v
@@ -195,6 +201,9 @@ func (sc ServerConfig) ToKeyokuConfig() keyoku.Config {
 	}
 	if sc.EmbeddingModel != "" {
 		cfg.EmbeddingModel = sc.EmbeddingModel
+	}
+	if sc.EmbeddingDimensions > 0 {
+		cfg.EmbeddingDimensions = sc.EmbeddingDimensions
 	}
 	if sc.OpenAIBaseURL != "" {
 		cfg.OpenAIBaseURL = sc.OpenAIBaseURL

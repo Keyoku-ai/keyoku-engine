@@ -26,8 +26,9 @@ type Config struct {
 	EmbeddingBaseURL string // e.g., custom embedding endpoint (defaults to OpenAI)
 
 	// Embeddings
-	EmbeddingProvider string // "openai" (default), "gemini"
-	EmbeddingModel    string // default: "text-embedding-3-small" (openai) or "gemini-embedding-001" (gemini)
+	EmbeddingProvider   string // "openai" (default), "gemini"
+	EmbeddingModel      string // default: "text-embedding-3-small" (openai) or "gemini-embedding-001" (gemini)
+	EmbeddingDimensions int    // override output dimensions (0 = use model default; Gemini supports truncation via OutputDimensionality)
 
 	// Behavior
 	MaxExtractTokens int // default: 4000
