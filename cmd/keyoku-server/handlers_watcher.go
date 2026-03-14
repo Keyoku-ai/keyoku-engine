@@ -105,6 +105,20 @@ func (h *Handlers) HandleWatcherStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 }
 
+// HandleWatcherHistory returns the tick history ring buffer for auditing.
+func (h *Handlers) HandleWatcherHistory(w http.ResponseWriter, r *http.Request) {
+	watcher := h.k.Watcher()
+	if watcher == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ticks": []any{},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ticks": watcher.History(),
+	})
+}
+
 // HandleWatcherWatch adds an entity to the watch list.
 func (h *Handlers) HandleWatcherWatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {

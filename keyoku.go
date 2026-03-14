@@ -220,6 +220,16 @@ func New(cfg Config) (*Keyoku, error) {
 	return k, nil
 }
 
+// NewForTesting creates a minimal Keyoku suitable for tests that don't need
+// an LLM provider or embedder. Uses the given store directly.
+func NewForTesting(store storage.Store) *Keyoku {
+	return &Keyoku{
+		store:    store,
+		logger:   slog.Default(),
+		eventBus: NewEventBus(false),
+	}
+}
+
 // Provider returns the LLM provider, or nil if not configured.
 func (k *Keyoku) Provider() llm.Provider {
 	return k.provider

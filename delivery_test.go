@@ -5,6 +5,7 @@ package keyoku
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -449,4 +450,119 @@ func TestCLIDeliverer_BuildArgs(t *testing.T) {
 			t.Errorf("arg[%d]: expected %q, got %q", i, expected[i], a)
 		}
 	}
+}
+
+// --- CLIDeliverer.Deliver() tests via CommandRunner mock ---
+
+type mockRunner struct {
+	lastCmd  string
+	lastArgs []string
+	output   []byte
+	err      error
+}
+
+func (m *mockRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	m.lastCmd = name
+	m.lastArgs = args
+	return m.output, m.err
+}
+
+func TestCLIDeliverer_Deliver_Success(t *testing.T) {
+	runner := &mockRunner{output: []byte("ok")}
+	d := NewCLIDeliverer(DeliveryConfig{
+		Command:   "openclaw",
+		Channel:   "telegram",
+		Recipient: "-123",
+	})
+	d.runner = runner
+
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Summary:        "test signals",
+		TimePeriod:     "working",
+	}
+
+	err := d.Deliver(context.Background(), "user-1", result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.lastCmd != "openclaw" {
+		t.Errorf("expected cmd=openclaw, got %q", runner.lastCmd)
+	}
+	// Verify args contain --message and --deliver
+	found := false
+	for _, a := range runner.lastArgs {
+		if a == "--deliver" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected --deliver in args")
+	}
+}
+
+func TestCLIDeliverer_Deliver_CommandError(t *testing.T) {
+	runner := &mockRunner{
+		output: []byte("command not found"),
+		err:    fmt.Errorf("exit status 1"),
+	}
+	d := NewCLIDeliverer(DeliveryConfig{Command: "openclaw"})
+	d.runner = runner
+
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Summary:        "test",
+		TimePeriod:     "working",
+	}
+
+	err := d.Deliver(context.Background(), "user-1", result)
+	if err == nil {
+		t.Fatal("expected error on command failure")
+	}
+	if !strings.Contains(err.Error(), "delivery:") {
+		t.Errorf("expected 'delivery:' prefix in error, got: %v", err)
+	}
+}
+
+func TestCLIDeliverer_Deliver_EmptyCommand(t *testing.T) {
+	d := NewCLIDeliverer(DeliveryConfig{Command: ""}) // defaults to "openclaw"
+	d.runner = &mockRunner{output: []byte("ok")}
+
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Summary:        "test",
+		TimePeriod:     "working",
+	}
+
+	// Should succeed since default command is "openclaw"
+	err := d.Deliver(context.Background(), "user-1", result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCLIDeliverer_Deliver_Timeout(t *testing.T) {
+	// Create a runner that respects context cancellation
+	runner := &mockRunner{}
+	d := NewCLIDeliverer(DeliveryConfig{
+		Command: "openclaw",
+		Timeout: 50 * time.Millisecond,
+	})
+	// Replace runner with one that blocks until context is done
+	d.runner = CommandRunnerFunc(func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Summary:        "test",
+		TimePeriod:     "working",
+	}
+
+	err := d.Deliver(context.Background(), "user-1", result)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	_ = runner // suppress unused
 }

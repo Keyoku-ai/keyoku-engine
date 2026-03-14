@@ -6,6 +6,7 @@ package keyoku
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -864,5 +865,282 @@ func TestHasFreshMemory_EmptySlice(t *testing.T) {
 	}
 	if hasFreshMemory([]*Memory{}, 30*time.Minute) {
 		t.Error("hasFreshMemory should return false for empty slice")
+	}
+}
+
+// --- Nudge Protocol Tests ---
+
+// nudgeTestKeyoku creates a Keyoku with the given store and optional time period override.
+func nudgeTestKeyoku(store storage.Store, timePeriod string) *Keyoku {
+	k := &Keyoku{store: store, logger: slog.Default()}
+	if timePeriod != "" {
+		k.timePeriodOverride = timePeriod
+	}
+	return k
+}
+
+// nudgeTestParams returns HeartbeatParams suitable for nudge testing.
+func nudgeTestParams() HeartbeatParams {
+	return HeartbeatParams{
+		NudgeAfterSilence: 2 * time.Hour,
+		MaxNudgesPerDay:   3,
+		NudgeMaxInterval:  48 * time.Hour,
+	}
+}
+
+func TestEvaluateNudge_ObserveMode(t *testing.T) {
+	k := nudgeTestKeyoku(&testStore{}, PeriodWorking)
+	result := &HeartbeatResult{}
+	k.evaluateNudge(context.Background(), "entity-1", "default", "observe", nudgeTestParams(), result)
+
+	if result.ShouldAct {
+		t.Error("observe mode should not nudge")
+	}
+	if result.DecisionReason != "no_signals" {
+		t.Errorf("DecisionReason = %q, want no_signals", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_Disabled(t *testing.T) {
+	k := nudgeTestKeyoku(&testStore{}, PeriodWorking)
+	result := &HeartbeatResult{}
+	params := nudgeTestParams()
+	params.NudgeAfterSilence = 0 // disabled
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", params, result)
+
+	if result.ShouldAct {
+		t.Error("NudgeAfterSilence=0 should not nudge")
+	}
+	if result.DecisionReason != "no_signals" {
+		t.Errorf("DecisionReason = %q, want no_signals", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_InsufficientSilence(t *testing.T) {
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: time.Now().Add(-30 * time.Minute)}, // only 30m silence
+			}, nil
+		},
+	}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+	result := &HeartbeatResult{}
+	params := nudgeTestParams() // requires 2h silence
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", params, result)
+
+	if result.ShouldAct {
+		t.Error("insufficient silence should not nudge")
+	}
+	if result.DecisionReason != "no_signals" {
+		t.Errorf("DecisionReason = %q, want no_signals", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_DailyCapReached(t *testing.T) {
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: time.Now().Add(-3 * time.Hour)}, // 3h silence
+			}, nil
+		},
+		getNudgeCountTodayFn: func(_ context.Context, _, _ string) (int, error) {
+			return 3, nil // at cap (MaxNudgesPerDay=3)
+		},
+	}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+	result := &HeartbeatResult{}
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", nudgeTestParams(), result)
+
+	if result.ShouldAct {
+		t.Error("should not nudge when daily cap reached")
+	}
+	if result.DecisionReason != "suppress_nudge_cap" {
+		t.Errorf("DecisionReason = %q, want suppress_nudge_cap", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_BackoffSuppression(t *testing.T) {
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: time.Now().Add(-5 * time.Hour)}, // 5h silence
+			}, nil
+		},
+		getNudgeCountTodayFn: func(_ context.Context, _, _ string) (int, error) {
+			return 1, nil // 1 nudge already → backoff: 2h * 2^1 = 4h required
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, _, _, decision string) (*storage.HeartbeatAction, error) {
+			if decision == "act" {
+				return &storage.HeartbeatAction{
+					ActedAt:         time.Now().Add(-3 * time.Hour), // 3h ago (< 4h required)
+					Decision:        "act",
+					TriggerCategory: "nudge",
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+	result := &HeartbeatResult{}
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", nudgeTestParams(), result)
+
+	if result.ShouldAct {
+		t.Error("should not nudge during backoff period")
+	}
+	if result.DecisionReason != "suppress_nudge_backoff" {
+		t.Errorf("DecisionReason = %q, want suppress_nudge_backoff", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_TimePeriodSuppression(t *testing.T) {
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: time.Now().Add(-3 * time.Hour)},
+			}, nil
+		},
+	}
+	// Evening period has min tier = Normal, nudge is Low tier → suppressed
+	k := nudgeTestKeyoku(store, PeriodEvening)
+	result := &HeartbeatResult{}
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", nudgeTestParams(), result)
+
+	if result.ShouldAct {
+		t.Error("should not nudge during evening")
+	}
+	if result.DecisionReason != "suppress_time_period" {
+		t.Errorf("DecisionReason = %q, want suppress_time_period", result.DecisionReason)
+	}
+}
+
+func TestEvaluateNudge_SuccessfulNudge(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: now.Add(-3 * time.Hour)}, // 3h silence > 2h threshold
+			}, nil
+		},
+		// getNudgeCountTodayFn defaults to 0
+		// getLastHeartbeatActionFn defaults to nil (no previous nudge)
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			// Return a plan for findNudgeContent continuity-first path
+			if len(q.Types) > 0 && (q.Types[0] == storage.TypePlan || q.Types[0] == storage.TypeActivity) {
+				return []*storage.Memory{{
+					ID:          "plan-1",
+					Content:     "Complete the API integration",
+					Type:        storage.TypePlan,
+					Importance:  0.8,
+					AccessCount: 1,
+					State:       storage.StateActive,
+				}}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+	result := &HeartbeatResult{}
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", nudgeTestParams(), result)
+
+	if !result.ShouldAct {
+		t.Errorf("should nudge with sufficient silence and content, got DecisionReason=%q", result.DecisionReason)
+	}
+	if result.DecisionReason != "nudge" {
+		t.Errorf("DecisionReason = %q, want nudge", result.DecisionReason)
+	}
+	if result.NudgeContext == "" {
+		t.Error("NudgeContext should be populated")
+	}
+	if result.NudgeContext != "Complete the API integration" {
+		t.Errorf("NudgeContext = %q, want 'Complete the API integration'", result.NudgeContext)
+	}
+}
+
+func TestEvaluateNudge_NoContent(t *testing.T) {
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{CreatedAt: time.Now().Add(-3 * time.Hour)},
+			}, nil
+		},
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil // no memories at all
+		},
+	}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+	result := &HeartbeatResult{}
+
+	k.evaluateNudge(context.Background(), "entity-1", "default", "act", nudgeTestParams(), result)
+
+	if result.ShouldAct {
+		t.Error("should not nudge when no content available")
+	}
+	if result.DecisionReason != "no_signals" {
+		t.Errorf("DecisionReason = %q, want no_signals", result.DecisionReason)
+	}
+}
+
+func TestFindNudgeContent_ContinuityFirst(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && (q.Types[0] == storage.TypePlan || q.Types[0] == storage.TypeActivity) {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Ship the release", Type: storage.TypePlan, Importance: 0.7, AccessCount: 1},
+					{ID: "plan-2", Content: "Low importance", Type: storage.TypePlan, Importance: 0.3, AccessCount: 0},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := &Keyoku{store: store, logger: slog.Default()}
+
+	content := k.findNudgeContent(context.Background(), "entity-1", "default")
+	if content != "Ship the release" {
+		t.Errorf("findNudgeContent = %q, want 'Ship the release' (continuity-first, importance >= 0.5)", content)
+	}
+}
+
+func TestFindNudgeContent_HighImportanceFallback(t *testing.T) {
+	callCount := 0
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			callCount++
+			// First call: continuity types → empty
+			if len(q.Types) > 0 {
+				return nil, nil
+			}
+			// Second call: all active memories by importance
+			return []*storage.Memory{
+				{ID: "mem-1", Content: "Very important fact", Importance: 0.9, AccessCount: 0},
+				{ID: "mem-2", Content: "Moderately important", Importance: 0.5, AccessCount: 0},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store, logger: slog.Default()}
+
+	content := k.findNudgeContent(context.Background(), "entity-1", "default")
+	if content != "Very important fact" {
+		t.Errorf("findNudgeContent = %q, want 'Very important fact' (high-importance fallback)", content)
+	}
+}
+
+func TestFindNudgeContent_EmptyStore(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+	}
+	k := &Keyoku{store: store, logger: slog.Default()}
+
+	content := k.findNudgeContent(context.Background(), "entity-1", "default")
+	if content != "" {
+		t.Errorf("findNudgeContent = %q, want empty for empty store", content)
 	}
 }

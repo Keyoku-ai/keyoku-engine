@@ -61,18 +61,52 @@ type IntervalFactors struct {
 
 // WatcherStatus is the full status snapshot returned by Status().
 type WatcherStatus struct {
-	Running       bool            `json:"running"`
-	Adaptive      bool            `json:"adaptive"`
-	NextTickAt    *time.Time      `json:"next_tick_at,omitempty"`
-	IntervalMs    int64           `json:"current_interval_ms"`
-	BaseMs        int64           `json:"base_interval_ms"`
-	MinMs         int64           `json:"min_interval_ms"`
-	MaxMs         int64           `json:"max_interval_ms"`
-	Factors       *IntervalFactors `json:"factors,omitempty"`
-	LastActAt     *time.Time      `json:"last_act_at,omitempty"`
-	LastDecision  string          `json:"last_decision"`
-	LastCheckAt   *time.Time      `json:"last_check_at,omitempty"`
-	Entities      []string        `json:"entities"`
+	Running        bool             `json:"running"`
+	Adaptive       bool             `json:"adaptive"`
+	NextTickAt     *time.Time       `json:"next_tick_at,omitempty"`
+	IntervalMs     int64            `json:"current_interval_ms"`
+	BaseMs         int64            `json:"base_interval_ms"`
+	MinMs          int64            `json:"min_interval_ms"`
+	MaxMs          int64            `json:"max_interval_ms"`
+	Factors        *IntervalFactors `json:"factors,omitempty"`
+	LastActAt      *time.Time       `json:"last_act_at,omitempty"`
+	LastDecision   string           `json:"last_decision"`
+	DecisionReason string           `json:"decision_reason,omitempty"`
+	LastCheckAt    *time.Time       `json:"last_check_at,omitempty"`
+	Entities       []string         `json:"entities"`
+	SignalSummary  *SignalSummary   `json:"signal_summary,omitempty"`
+}
+
+// TickRecord captures the full reasoning for a single watcher tick.
+// Stored in an in-memory ring buffer (max 100) for audit via the history API.
+type TickRecord struct {
+	Timestamp      time.Time      `json:"timestamp"`
+	EntityID       string         `json:"entity_id"`
+	Decision       string         `json:"decision"`        // "act" or "skip"
+	DecisionReason string         `json:"decision_reason"`  // full reason from HeartbeatResult
+	SignalCount    int            `json:"signal_count"`
+	SignalSummary  *SignalSummary `json:"signal_summary,omitempty"`
+	UrgencyTier    string         `json:"urgency_tier,omitempty"`
+	TimePeriod     string         `json:"time_period,omitempty"`
+	Fingerprint    string         `json:"fingerprint,omitempty"`
+	Delivered      *bool          `json:"delivered,omitempty"`
+}
+
+const maxTickHistory = 100
+
+// SignalSummary provides a breakdown of active signals from the last heartbeat check.
+type SignalSummary struct {
+	Total         int `json:"total"`
+	PendingWork   int `json:"pending_work"`
+	Deadlines     int `json:"deadlines"`
+	Scheduled     int `json:"scheduled"`
+	Decaying      int `json:"decaying"`
+	Conflicts     int `json:"conflicts"`
+	StaleMonitors int `json:"stale_monitors"`
+	GoalProgress  int `json:"goal_progress"`
+	Relationships int `json:"relationships"`
+	KnowledgeGaps int `json:"knowledge_gaps"`
+	Patterns      int `json:"patterns"`
 }
 
 // DefaultWatcherConfig returns a default watcher configuration.
@@ -104,6 +138,7 @@ type Watcher struct {
 	lastFactors  *IntervalFactors
 	lastCheckAt  time.Time
 	lastDecision string
+	tickHistory  []TickRecord
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -271,6 +306,12 @@ func (w *Watcher) Status() WatcherStatus {
 		s.LastDecision = "none"
 	}
 
+	// Expose the actual decision reason from the heartbeat engine
+	if w.lastResult != nil {
+		s.DecisionReason = w.lastResult.DecisionReason
+		s.SignalSummary = buildSignalSummary(w.lastResult)
+	}
+
 	return s
 }
 
@@ -414,6 +455,46 @@ func countSignals(r *HeartbeatResult) int {
 	return n
 }
 
+// buildSignalSummary creates a SignalSummary from a HeartbeatResult.
+func buildSignalSummary(r *HeartbeatResult) *SignalSummary {
+	return &SignalSummary{
+		Total:         countSignals(r),
+		PendingWork:   len(r.PendingWork),
+		Deadlines:     len(r.Deadlines),
+		Scheduled:     len(r.Scheduled),
+		Decaying:      len(r.Decaying),
+		Conflicts:     len(r.Conflicts),
+		StaleMonitors: len(r.StaleMonitors),
+		GoalProgress:  len(r.GoalProgress),
+		Relationships: len(r.Relationships),
+		KnowledgeGaps: len(r.KnowledgeGaps),
+		Patterns:      len(r.Patterns),
+	}
+}
+
+// appendTick adds a tick record to the ring buffer, trimming to maxTickHistory.
+// Must be called with w.mu held.
+func (w *Watcher) appendTick(rec TickRecord) {
+	w.tickHistory = append(w.tickHistory, rec)
+	if len(w.tickHistory) > maxTickHistory {
+		w.tickHistory = w.tickHistory[len(w.tickHistory)-maxTickHistory:]
+	}
+}
+
+// History returns a copy of the tick history, newest first.
+func (w *Watcher) History() []TickRecord {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if len(w.tickHistory) == 0 {
+		return nil
+	}
+	out := make([]TickRecord, len(w.tickHistory))
+	for i, rec := range w.tickHistory {
+		out[len(w.tickHistory)-1-i] = rec
+	}
+	return out
+}
+
 func (w *Watcher) checkAll() {
 	w.mu.RLock()
 	ids := make([]string, 0, len(w.entityIDs))
@@ -450,6 +531,29 @@ func (w *Watcher) checkAll() {
 		w.mu.Unlock()
 
 		if !result.ShouldAct {
+			reason := result.DecisionReason
+			if reason == "" {
+				reason = "no_signals"
+			}
+			signalCount := countSignals(result)
+			w.logger.Debug("heartbeat skip",
+				"entity", entityID,
+				"reason", reason,
+				"signals", signalCount,
+			)
+			w.mu.Lock()
+			w.appendTick(TickRecord{
+				Timestamp:      time.Now(),
+				EntityID:       entityID,
+				Decision:       "skip",
+				DecisionReason: reason,
+				SignalCount:    signalCount,
+				SignalSummary:  buildSignalSummary(result),
+				UrgencyTier:    result.Urgency,
+				TimePeriod:     string(w.keyoku.currentTimePeriod()),
+				Fingerprint:    result.SignalFingerprint,
+			})
+			w.mu.Unlock()
 			continue
 		}
 
@@ -460,9 +564,40 @@ func (w *Watcher) checkAll() {
 			w.mu.Lock()
 			w.lastActTime = time.Now()
 			w.mu.Unlock()
-			if err := w.deliverer.Deliver(w.ctx, entityID, result); err != nil {
-				w.logger.Error("heartbeat delivery failed", "entity", entityID, "error", err)
+			deliverErr := w.deliverer.Deliver(w.ctx, entityID, result)
+			if deliverErr != nil {
+				w.logger.Error("heartbeat delivery failed", "entity", entityID, "error", deliverErr)
 			}
+			delivered := deliverErr == nil
+			w.mu.Lock()
+			w.appendTick(TickRecord{
+				Timestamp:      time.Now(),
+				EntityID:       entityID,
+				Decision:       "act",
+				DecisionReason: result.DecisionReason,
+				SignalCount:    countSignals(result),
+				SignalSummary:  buildSignalSummary(result),
+				UrgencyTier:    result.Urgency,
+				TimePeriod:     string(w.keyoku.currentTimePeriod()),
+				Fingerprint:    result.SignalFingerprint,
+				Delivered:      &delivered,
+			})
+			w.mu.Unlock()
+		} else {
+			// Event-only mode (no delivery configured)
+			w.mu.Lock()
+			w.appendTick(TickRecord{
+				Timestamp:      time.Now(),
+				EntityID:       entityID,
+				Decision:       "act",
+				DecisionReason: result.DecisionReason,
+				SignalCount:    countSignals(result),
+				SignalSummary:  buildSignalSummary(result),
+				UrgencyTier:    result.Urgency,
+				TimePeriod:     string(w.keyoku.currentTimePeriod()),
+				Fingerprint:    result.SignalFingerprint,
+			})
+			w.mu.Unlock()
 		}
 	}
 

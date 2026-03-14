@@ -12,10 +12,30 @@ import (
 	"time"
 )
 
+// CommandRunner executes external commands. Extracted for testability.
+type CommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) ([]byte, error)
+}
+
+// CommandRunnerFunc adapts a plain function to the CommandRunner interface.
+type CommandRunnerFunc func(ctx context.Context, name string, args ...string) ([]byte, error)
+
+func (f CommandRunnerFunc) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return f(ctx, name, args...)
+}
+
+// execRunner is the default CommandRunner using os/exec.
+type execRunner struct{}
+
+func (r *execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
 // CLIDeliverer delivers heartbeat messages by shelling out to the OpenClaw CLI.
 type CLIDeliverer struct {
 	config DeliveryConfig
 	logger *slog.Logger
+	runner CommandRunner
 }
 
 // NewCLIDeliverer creates a new CLI-based deliverer.
@@ -29,6 +49,7 @@ func NewCLIDeliverer(config DeliveryConfig) *CLIDeliverer {
 	return &CLIDeliverer{
 		config: config,
 		logger: slog.Default().With("component", "delivery-cli"),
+		runner: &execRunner{},
 	}
 }
 
@@ -41,6 +62,10 @@ func (d *CLIDeliverer) SetLogger(logger *slog.Logger) {
 func (d *CLIDeliverer) Deliver(ctx context.Context, entityID string, result *HeartbeatResult) error {
 	message := buildDeliveryMessage(result)
 	if message == "" {
+		d.logger.Warn("delivery skipped: empty message",
+			"entity", entityID,
+			"decision", result.DecisionReason,
+		)
 		return nil
 	}
 
@@ -55,9 +80,7 @@ func (d *CLIDeliverer) Deliver(ctx context.Context, entityID string, result *Hea
 
 	// Append our args to any base command args (e.g. "docker exec kumo openclaw" + "agent --message ...")
 	allArgs := append(cmdParts[1:], args...)
-	cmd := exec.CommandContext(ctx, cmdParts[0], allArgs...)
-
-	output, err := cmd.CombinedOutput()
+	output, err := d.runner.Run(ctx, cmdParts[0], allArgs...)
 	if err != nil {
 		d.logger.Error("delivery failed",
 			"entity", entityID,

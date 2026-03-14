@@ -157,6 +157,7 @@ func main() {
 
 	// Watcher
 	mux.HandleFunc("GET /api/v1/watcher/status", handlers.HandleWatcherStatus)
+	mux.HandleFunc("GET /api/v1/watcher/history", handlers.HandleWatcherHistory)
 	mux.HandleFunc("POST /api/v1/watcher/start", handlers.HandleWatcherStart)
 	mux.HandleFunc("POST /api/v1/watcher/stop", handlers.HandleWatcherStop)
 	mux.HandleFunc("POST /api/v1/watcher/watch", handlers.HandleWatcherWatch)
