@@ -63,6 +63,40 @@ func TestNewProvider_UnknownProvider(t *testing.T) {
 	}
 }
 
+// TestNewProvider_Ollama verifies the Ollama branch: no API key required, default/custom base URL and model.
+// The returned provider is OpenAI-compatible (Ollama exposes /v1); Name() is "openai" but it points at Ollama.
+func TestNewProvider_Ollama(t *testing.T) {
+	t.Run("no API key required", func(t *testing.T) {
+		p, err := NewProvider(ProviderConfig{Provider: "ollama"})
+		if err != nil {
+			t.Fatalf("Ollama with no API key: error = %v", err)
+		}
+		if p == nil {
+			t.Fatal("expected non-nil provider")
+		}
+		if p.Model() == "" {
+			t.Error("Model() should not be empty")
+		}
+	})
+
+	t.Run("custom model and base URL", func(t *testing.T) {
+		p, err := NewProvider(ProviderConfig{
+			Provider: "ollama",
+			Model:    "llama3.2",
+			BaseURL:  "http://myhost:11434",
+		})
+		if err != nil {
+			t.Fatalf("Ollama with custom config: error = %v", err)
+		}
+		if p == nil {
+			t.Fatal("expected non-nil provider")
+		}
+		if p.Model() != "llama3.2" {
+			t.Errorf("Model() = %q, want llama3.2", p.Model())
+		}
+	})
+}
+
 func TestNewProvider_OpenAI(t *testing.T) {
 	p, err := NewProvider(ProviderConfig{Provider: "openai", APIKey: "fake-key"})
 	if err != nil {
@@ -432,5 +466,56 @@ func TestAnthropic_ConsolidateMemories(t *testing.T) {
 	}
 	if resp.Content == "" {
 		t.Error("expected non-empty consolidated content")
+	}
+}
+
+// getOllamaLLMConfig returns base URL and chat model for Ollama LLM integration tests.
+// Skips the test if OLLAMA_BASE_URL is not set (no local Ollama server).
+func getOllamaLLMConfig(t *testing.T) (baseURL, model string) {
+	t.Helper()
+	loadEnv(t)
+	baseURL = os.Getenv("OLLAMA_BASE_URL")
+	if baseURL == "" {
+		t.Skip("OLLAMA_BASE_URL not set, skipping Ollama LLM integration test")
+	}
+	model = os.Getenv("OLLAMA_MODEL")
+	if model == "" {
+		model = "llama3.2"
+	}
+	return baseURL, model
+}
+
+// TestOllama_ExtractMemories is an integration test that calls a real Ollama server.
+// Run with: OLLAMA_BASE_URL=http://localhost:11434 [OLLAMA_MODEL=llama3.2] go test -run TestOllama_ExtractMemories ./llm/...
+func TestOllama_ExtractMemories(t *testing.T) {
+	baseURL, model := getOllamaLLMConfig(t)
+
+	p, err := NewProvider(ProviderConfig{
+		Provider: "ollama",
+		BaseURL:  baseURL,
+		Model:    model,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider(ollama) error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := p.ExtractMemories(ctx, ExtractionRequest{
+		Content: "My name is Sam and I work at Acme. I like coffee.",
+	})
+	if err != nil {
+		t.Fatalf("ExtractMemories error = %v", err)
+	}
+	if len(resp.Memories) == 0 {
+		t.Error("expected at least one extracted memory")
+	}
+	for _, mem := range resp.Memories {
+		if mem.Content == "" {
+			t.Error("memory has empty content")
+		}
+		if !MemoryType(mem.Type).IsValid() {
+			t.Errorf("invalid memory type: %q", mem.Type)
+		}
 	}
 }

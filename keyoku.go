@@ -91,15 +91,15 @@ type QuietHoursConfig struct {
 }
 
 type Keyoku struct {
-	engine       *engine.Engine
-	store        storage.Store
-	scheduler    *jobs.Scheduler
-	emb          embedder.Embedder
-	provider     llm.Provider
-	logger       *slog.Logger
-	stateManager *engine.StateManager
-	eventBus     *EventBus
-	watcher      *Watcher
+	engine             *engine.Engine
+	store              storage.Store
+	scheduler          *jobs.Scheduler
+	emb                embedder.Embedder
+	provider           llm.Provider
+	logger             *slog.Logger
+	stateManager       *engine.StateManager
+	eventBus           *EventBus
+	watcher            *Watcher
 	quietHours         QuietHoursConfig
 	timePeriodOverride string // testing only: override currentTimePeriod() return value
 }
@@ -118,6 +118,9 @@ func New(cfg Config) (*Keyoku, error) {
 	case "anthropic":
 		apiKey = cfg.AnthropicAPIKey
 		baseURL = cfg.AnthropicBaseURL
+	case "ollama":
+		apiKey = cfg.OllamaAPIKey // empty is fine; NewProvider uses "ollama" as placeholder
+		baseURL = cfg.OllamaBaseURL
 	}
 
 	provider, err := llm.NewProvider(llm.ProviderConfig{
@@ -130,13 +133,15 @@ func New(cfg Config) (*Keyoku, error) {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
 	}
 
-	// Create embedder (supports OpenAI or Gemini)
+	// Create embedder (supports OpenAI, Gemini, or Ollama).
 	// If EmbeddingProvider is not set, match the extraction provider.
 	embProvider := cfg.EmbeddingProvider
 	if embProvider == "" {
 		switch cfg.ExtractionProvider {
 		case "gemini", "google":
 			embProvider = "gemini"
+		case "ollama":
+			embProvider = "ollama"
 		default:
 			embProvider = "openai"
 		}
@@ -148,6 +153,20 @@ func New(cfg Config) (*Keyoku, error) {
 		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel)
 		if embErr != nil {
 			return nil, fmt.Errorf("failed to create Gemini embedder: %w", embErr)
+		}
+	case "ollama":
+		dims := cfg.OllamaEmbeddingDims
+		if dims == 0 {
+			dims = 768 // safe default for most Ollama embedding models
+		}
+		ollamaEmbURL := cfg.EmbeddingBaseURL
+		if ollamaEmbURL == "" {
+			ollamaEmbURL = cfg.OllamaBaseURL
+		}
+		var embErr error
+		emb, embErr = embedder.NewOllama(ollamaEmbURL, cfg.EmbeddingModel, dims)
+		if embErr != nil {
+			return nil, fmt.Errorf("failed to create Ollama embedder: %w", embErr)
 		}
 	default: // "openai" or empty
 		embBaseURL := cfg.EmbeddingBaseURL
@@ -386,8 +405,8 @@ func (k *Keyoku) Remember(ctx context.Context, entityID, content string, opts ..
 // SeedMemoryInput describes a memory to insert without LLM extraction.
 type SeedMemoryInput struct {
 	Content           string   `json:"content"`
-	Type              string   `json:"type"`                         // IDENTITY, PREFERENCE, PLAN, ACTIVITY, CONTEXT, EVENT, EPHEMERAL
-	Importance        float64  `json:"importance"`                   // 0.0-1.0
+	Type              string   `json:"type"`       // IDENTITY, PREFERENCE, PLAN, ACTIVITY, CONTEXT, EVENT, EPHEMERAL
+	Importance        float64  `json:"importance"` // 0.0-1.0
 	EntityID          string   `json:"entity_id"`
 	AgentID           string   `json:"agent_id,omitempty"`
 	Tags              []string `json:"tags,omitempty"`               // e.g. ["cron:daily:09:00", "monitor"]

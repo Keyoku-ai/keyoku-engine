@@ -12,7 +12,7 @@ type Config struct {
 	DBPath string
 
 	// Extraction LLM
-	ExtractionProvider string // "gemini", "openai", "anthropic"
+	ExtractionProvider string // "gemini", "openai", "anthropic", "ollama"
 	ExtractionModel    string // e.g., "gemini-3-flash-preview", "gpt-5-mini", "claude-haiku-4-5-20251001"
 
 	// API Keys
@@ -25,8 +25,13 @@ type Config struct {
 	AnthropicBaseURL string // e.g., "https://openrouter.ai/api"
 	EmbeddingBaseURL string // e.g., custom embedding endpoint (defaults to OpenAI)
 
+	// Ollama (local inference — no API key required for standard installs)
+	OllamaBaseURL       string // e.g., "http://localhost:11434" (default)
+	OllamaAPIKey        string // optional: set when Ollama is behind bearer-auth middleware
+	OllamaEmbeddingDims int    // vector dimensions for the Ollama embedding model (768 or 1024)
+
 	// Embeddings
-	EmbeddingProvider string // "openai" (default), "gemini"
+	EmbeddingProvider string // "openai" (default), "gemini", "ollama"
 	EmbeddingModel    string // default: "text-embedding-3-small" (openai) or "gemini-embedding-001" (gemini)
 
 	// Behavior

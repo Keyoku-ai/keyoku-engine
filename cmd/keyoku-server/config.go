@@ -13,23 +13,26 @@ import (
 
 // ServerConfig holds configuration for the HTTP sidecar server.
 type ServerConfig struct {
-	Port               int    `json:"port"`
-	DBPath             string `json:"db_path"`
-	ExtractionProvider string `json:"extraction_provider"`
-	ExtractionModel    string `json:"extraction_model"`
-	OpenAIAPIKey       string `json:"openai_api_key"`
-	GeminiAPIKey       string `json:"gemini_api_key"`
-	AnthropicAPIKey    string `json:"anthropic_api_key"`
-	OpenAIBaseURL      string `json:"openai_base_url"`
-	AnthropicBaseURL   string `json:"anthropic_base_url"`
-	EmbeddingBaseURL   string `json:"embedding_base_url"`
-	EmbeddingProvider  string `json:"embedding_provider"`
-	EmbeddingModel     string `json:"embedding_model"`
-	SchedulerEnabled   *bool  `json:"scheduler_enabled"`
-	QuietHoursEnabled  *bool  `json:"quiet_hours_enabled"`
-	QuietHourStart     *int   `json:"quiet_hour_start"`
-	QuietHourEnd       *int   `json:"quiet_hour_end"`
-	QuietHoursTimezone string `json:"quiet_hours_timezone"`
+	Port                int    `json:"port"`
+	DBPath              string `json:"db_path"`
+	ExtractionProvider  string `json:"extraction_provider"`
+	ExtractionModel     string `json:"extraction_model"`
+	OpenAIAPIKey        string `json:"openai_api_key"`
+	GeminiAPIKey        string `json:"gemini_api_key"`
+	AnthropicAPIKey     string `json:"anthropic_api_key"`
+	OpenAIBaseURL       string `json:"openai_base_url"`
+	AnthropicBaseURL    string `json:"anthropic_base_url"`
+	EmbeddingBaseURL    string `json:"embedding_base_url"`
+	EmbeddingProvider   string `json:"embedding_provider"`
+	EmbeddingModel      string `json:"embedding_model"`
+	OllamaBaseURL       string `json:"ollama_base_url"`
+	OllamaAPIKey        string `json:"ollama_api_key"`
+	OllamaEmbeddingDims int    `json:"ollama_embedding_dims"`
+	SchedulerEnabled    *bool  `json:"scheduler_enabled"`
+	QuietHoursEnabled   *bool  `json:"quiet_hours_enabled"`
+	QuietHourStart      *int   `json:"quiet_hour_start"`
+	QuietHourEnd        *int   `json:"quiet_hour_end"`
+	QuietHoursTimezone  string `json:"quiet_hours_timezone"`
 
 	// Heartbeat delivery
 	DeliveryMethod    string `json:"delivery_method"`     // "cli" or ""
@@ -37,14 +40,14 @@ type ServerConfig struct {
 	DeliveryChannel   string `json:"delivery_channel"`    // e.g. "telegram"
 	DeliveryRecipient string `json:"delivery_recipient"`  // e.g. "-4970078838"
 	DeliverySessionID string `json:"delivery_session_id"` // e.g. "telegram:group:-4970078838"
-	AdaptiveHeartbeat *bool  `json:"adaptive_heartbeat"` // enable dynamic tick interval
+	AdaptiveHeartbeat *bool  `json:"adaptive_heartbeat"`  // enable dynamic tick interval
 
 	// Auto-start watcher on boot
 	WatcherAutoStart    *bool  `json:"watcher_auto_start"`
-	WatcherEntityIDs    string `json:"watcher_entity_ids"`     // comma-separated
-	WatcherBaseInterval int    `json:"watcher_base_interval"`  // ms
-	WatcherMinInterval  int    `json:"watcher_min_interval"`   // ms
-	WatcherMaxInterval  int    `json:"watcher_max_interval"`   // ms
+	WatcherEntityIDs    string `json:"watcher_entity_ids"`    // comma-separated
+	WatcherBaseInterval int    `json:"watcher_base_interval"` // ms
+	WatcherMinInterval  int    `json:"watcher_min_interval"`  // ms
+	WatcherMaxInterval  int    `json:"watcher_max_interval"`  // ms
 }
 
 // DefaultServerConfig returns a server config with sensible defaults.
@@ -108,6 +111,17 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("EMBEDDING_BASE_URL"); v != "" {
 		cfg.EmbeddingBaseURL = v
+	}
+	if v := os.Getenv("OLLAMA_BASE_URL"); v != "" {
+		cfg.OllamaBaseURL = v
+	}
+	if v := os.Getenv("OLLAMA_API_KEY"); v != "" {
+		cfg.OllamaAPIKey = v
+	}
+	if v := os.Getenv("OLLAMA_EMBEDDING_DIMS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.OllamaEmbeddingDims = n
+		}
 	}
 	if v := os.Getenv("KEYOKU_QUIET_HOURS_ENABLED"); v != "" {
 		enabled := v == "true" || v == "1"
@@ -204,6 +218,15 @@ func (sc ServerConfig) ToKeyokuConfig() keyoku.Config {
 	}
 	if sc.EmbeddingBaseURL != "" {
 		cfg.EmbeddingBaseURL = sc.EmbeddingBaseURL
+	}
+	if sc.OllamaBaseURL != "" {
+		cfg.OllamaBaseURL = sc.OllamaBaseURL
+	}
+	if sc.OllamaAPIKey != "" {
+		cfg.OllamaAPIKey = sc.OllamaAPIKey
+	}
+	if sc.OllamaEmbeddingDims > 0 {
+		cfg.OllamaEmbeddingDims = sc.OllamaEmbeddingDims
 	}
 	if sc.SchedulerEnabled != nil {
 		cfg.SchedulerEnabled = *sc.SchedulerEnabled

@@ -64,7 +64,8 @@ type ProviderConfig struct {
 
 // NewProvider creates a new LLM provider based on configuration.
 func NewProvider(cfg ProviderConfig) (Provider, error) {
-	if cfg.APIKey == "" {
+	// Ollama does not require an API key for standard local installs.
+	if cfg.APIKey == "" && cfg.Provider != "ollama" {
 		return nil, fmt.Errorf("API key is required for provider %s", cfg.Provider)
 	}
 
@@ -75,8 +76,20 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 		return NewOpenAIProvider(cfg.APIKey, cfg.Model, cfg.BaseURL)
 	case "anthropic":
 		return NewAnthropicProvider(cfg.APIKey, cfg.Model, cfg.BaseURL)
+	case "ollama":
+		// Ollama exposes an OpenAI-compatible API at <baseURL>/v1.
+		// Use a placeholder key so the OpenAI SDK is satisfied; Ollama ignores it.
+		apiKey := cfg.APIKey
+		if apiKey == "" {
+			apiKey = "ollama"
+		}
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:11434"
+		}
+		return NewOpenAIProvider(apiKey, cfg.Model, baseURL+"/v1")
 	default:
-		return nil, fmt.Errorf("unknown provider: %s (valid: google, openai, anthropic)", cfg.Provider)
+		return nil, fmt.Errorf("unknown provider: %s (valid: google, openai, anthropic, ollama)", cfg.Provider)
 	}
 }
 
