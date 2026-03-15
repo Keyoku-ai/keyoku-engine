@@ -21,7 +21,7 @@ func getGeminiKey(t *testing.T) string {
 
 func TestGeminiEmbedder_NewGemini(t *testing.T) {
 	t.Run("default model dimensions", func(t *testing.T) {
-		emb, err := NewGemini("fake-key", "")
+		emb, err := NewGemini("fake-key", "", 0)
 		if err != nil {
 			t.Fatalf("NewGemini error = %v", err)
 		}
@@ -31,7 +31,7 @@ func TestGeminiEmbedder_NewGemini(t *testing.T) {
 	})
 
 	t.Run("custom model", func(t *testing.T) {
-		emb, err := NewGemini("fake-key", "gemini-embedding-001")
+		emb, err := NewGemini("fake-key", "gemini-embedding-001", 0)
 		if err != nil {
 			t.Fatalf("NewGemini error = %v", err)
 		}
@@ -43,7 +43,7 @@ func TestGeminiEmbedder_NewGemini(t *testing.T) {
 
 func TestGeminiEmbedder_Embed(t *testing.T) {
 	key := getGeminiKey(t)
-	emb, err := NewGemini(key, "gemini-embedding-001")
+	emb, err := NewGemini(key, "gemini-embedding-001", 0)
 	if err != nil {
 		t.Fatalf("NewGemini error = %v", err)
 	}
@@ -70,7 +70,7 @@ func TestGeminiEmbedder_Embed(t *testing.T) {
 
 func TestGeminiEmbedder_EmbedBatch(t *testing.T) {
 	key := getGeminiKey(t)
-	emb, err := NewGemini(key, "gemini-embedding-001")
+	emb, err := NewGemini(key, "gemini-embedding-001", 0)
 	if err != nil {
 		t.Fatalf("NewGemini error = %v", err)
 	}
@@ -106,7 +106,7 @@ func TestGeminiEmbedder_EmbedBatch(t *testing.T) {
 
 func TestGeminiEmbedder_SimilarTexts(t *testing.T) {
 	key := getGeminiKey(t)
-	emb, err := NewGemini(key, "gemini-embedding-001")
+	emb, err := NewGemini(key, "gemini-embedding-001", 0)
 	if err != nil {
 		t.Fatalf("NewGemini error = %v", err)
 	}

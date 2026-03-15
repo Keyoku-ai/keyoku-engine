@@ -184,7 +184,7 @@ func initEmbedder(t *testing.T) embedder.Embedder {
 	t.Helper()
 
 	if key := os.Getenv("GEMINI_API_KEY"); key != "" {
-		emb, err := embedder.NewGemini(key, "gemini-embedding-001")
+		emb, err := embedder.NewGemini(key, "gemini-embedding-001", 0)
 		if err != nil {
 			t.Fatalf("failed to create Gemini embedder: %v", err)
 		}
