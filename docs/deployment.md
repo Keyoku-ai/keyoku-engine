@@ -22,7 +22,7 @@ This guide covers deploying keyoku-server in production environments.
 
 | Variable | Default | Description |
 |---|---|---|
-| `KEYOKU_EXTRACTION_PROVIDER` | `gemini` | LLM provider for memory extraction. One of: `gemini`, `openai`, `anthropic`. |
+| `KEYOKU_EXTRACTION_PROVIDER` | `gemini` | LLM provider for memory extraction. One of: `gemini`, `openai`, `anthropic`, `ollama`. |
 | `KEYOKU_EXTRACTION_MODEL` | `gemini-2.5-flash` | Model name for extraction. Examples: `gpt-5-mini`, `claude-haiku-4-5-20251001`. |
 | `OPENAI_API_KEY` | *(none)* | API key for OpenAI (extraction and/or embeddings). |
 | `GEMINI_API_KEY` | *(none)* | API key for Google Gemini (extraction and/or embeddings). |
@@ -34,9 +34,12 @@ This guide covers deploying keyoku-server in production environments.
 
 | Variable | Default | Description |
 |---|---|---|
-| `KEYOKU_EMBEDDING_PROVIDER` | *(matches extraction provider)* | Embedding provider. One of: `openai`, `gemini`. |
+| `KEYOKU_EMBEDDING_PROVIDER` | *(matches extraction provider)* | Embedding provider. One of: `openai`, `gemini`, `ollama`. |
 | `KEYOKU_EMBEDDING_MODEL` | `gemini-embedding-001` (gemini) or `text-embedding-3-small` (openai) | Embedding model name. |
 | `EMBEDDING_BASE_URL` | *(falls back to `OPENAI_BASE_URL`)* | Custom base URL for embeddings. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Base URL for Ollama server (used for both extraction and embeddings when provider is `ollama`). |
+| `OLLAMA_API_KEY` | *(none)* | Optional API key if Ollama is behind auth middleware. |
+| `OLLAMA_EMBEDDING_DIMS` | `768` | Vector dimensions for the Ollama embedding model. Must match your model's output size. |
 
 ### Quiet Hours
 
@@ -352,5 +355,11 @@ A single core is sufficient for most workloads. HNSW search is single-threaded p
 | OpenAI | `text-embedding-3-large` | 3072 |
 | Gemini | `gemini-embedding-001` | 3072 |
 | Gemini | `text-embedding-004` | 768 |
+| Ollama | `nomic-embed-text` | 768 |
+| Ollama | `mxbai-embed-large` | 1024 |
+| Ollama | `all-minilm` | 384 |
+| Ollama | `bge-large` | 1024 |
 
-Lower dimensions use less RAM and disk, and produce faster searches. `text-embedding-004` (768 dims) is a good choice for resource-constrained deployments.
+Lower dimensions use less RAM and disk, and produce faster searches. `text-embedding-004` (768 dims) or Ollama's `nomic-embed-text` (768 dims) are good choices for resource-constrained deployments.
+
+> **Switching embedding models**: If you change to a model with different dimensions on an existing database, the HNSW index will reject the new vectors (dimension mismatch). You must delete the database file and start fresh. Pick your embedding model once and stick with it. See the [Ollama guide](ollama.md) for details.

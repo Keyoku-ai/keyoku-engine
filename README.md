@@ -299,17 +299,20 @@ explanation, _ := k.Graph().ExplainConnection(ctx, "owner-id", aliceID, bobID)
 | OpenAI | gpt-4.1-mini | Balanced speed and quality |
 | OpenAI | gpt-4.1-nano | Cheapest OpenAI, slightly less reliable on complex schemas |
 | Anthropic | claude-haiku-4-5-20251001 | Fast, top-tier quality |
+| Ollama | llama3.2, qwen3.5:2b, etc. | Local inference, no API key required |
 
 ### Embedding Models
 
-| Provider | Model | Notes |
-|----------|-------|-------|
-| Google Gemini | gemini-embedding-001 | Default — included with Gemini API key |
-| OpenAI | text-embedding-3-small | Default — included with OpenAI API key |
+| Provider | Model | Dimensions | Notes |
+|----------|-------|------------|-------|
+| Google Gemini | gemini-embedding-001 | 3072 | Default — included with Gemini API key |
+| OpenAI | text-embedding-3-small | 1536 | Default — included with OpenAI API key |
+| Ollama | nomic-embed-text | 768 | Local, no API key required |
+| Ollama | mxbai-embed-large | 1024 | Local, higher quality |
 
-> **Note:** Anthropic does not offer embedding models. If you use Anthropic for extraction, pair it with Gemini or OpenAI for embeddings.
+> **Note:** Anthropic does not offer embedding models. If you use Anthropic for extraction, pair it with Gemini, OpenAI, or Ollama for embeddings.
 
-More models are being benchmarked and will be added in upcoming releases.
+For local Ollama setup, see the [Ollama guide](docs/ollama.md).
 
 Custom base URLs support OpenRouter, LiteLLM, and self-hosted endpoints.
 
