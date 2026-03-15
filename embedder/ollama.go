@@ -35,8 +35,8 @@ type OllamaEmbedder struct {
 // NewOllama creates an OllamaEmbedder. baseURL defaults to http://localhost:11434.
 // dims must be 768 or 1024 to match the supported Ollama embedding models.
 func NewOllama(baseURL, model string, dims int) (*OllamaEmbedder, error) {
-	if dims != 768 && dims != 1024 {
-		return nil, fmt.Errorf("ollama embedder: unsupported dimensions %d (must be 768 or 1024)", dims)
+	if dims <= 0 {
+		return nil, fmt.Errorf("ollama embedder: dimensions must be a positive integer, got %d", dims)
 	}
 	if baseURL == "" {
 		baseURL = "http://localhost:11434"

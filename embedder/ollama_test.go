@@ -24,7 +24,7 @@ func getOllamaConfig(t *testing.T) (baseURL, model string) {
 }
 
 func TestNewOllama_DimensionValidation(t *testing.T) {
-	valid := []int{768, 1024}
+	valid := []int{256, 384, 512, 768, 1024, 1536, 3072}
 	for _, dims := range valid {
 		emb, err := NewOllama("", "any-model", dims)
 		if err != nil {
@@ -37,7 +37,7 @@ func TestNewOllama_DimensionValidation(t *testing.T) {
 		}
 	}
 
-	invalid := []int{0, 256, 512, 1536, 3072}
+	invalid := []int{0, -1, -768}
 	for _, dims := range invalid {
 		_, err := NewOllama("", "any-model", dims)
 		if err == nil {
