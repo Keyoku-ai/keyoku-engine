@@ -247,7 +247,7 @@ func geminiCtx() (context.Context, context.CancelFunc) {
 func TestGemini_ExtractMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3.1-flash-lite-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -284,7 +284,7 @@ func TestGemini_ExtractMemories(t *testing.T) {
 func TestGemini_ConsolidateMemories(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3.1-flash-lite-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -309,7 +309,7 @@ func TestGemini_ConsolidateMemories(t *testing.T) {
 func TestGemini_ExtractWithSchema(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3.1-flash-lite-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}
@@ -342,7 +342,7 @@ func TestGemini_ExtractWithSchema(t *testing.T) {
 func TestGemini_ExtractState(t *testing.T) {
 	key := getKey(t, "GEMINI_API_KEY")
 
-	p, err := NewGeminiProvider(key, "gemini-2.5-flash")
+	p, err := NewGeminiProvider(key, "gemini-3.1-flash-lite-preview")
 	if err != nil {
 		t.Fatalf("NewGeminiProvider error = %v", err)
 	}

@@ -29,7 +29,7 @@ func NewGeminiProvider(apiKey, model string) (*GeminiProvider, error) {
 // project: GCP project ID, required for Vertex AI.
 func NewGeminiProviderWithBackend(apiKey, model, backend, project string) (*GeminiProvider, error) {
 	if model == "" {
-		model = "gemini-2.5-flash"
+		model = "gemini-3.1-flash-lite-preview"
 	}
 	liteMode := strings.Contains(model, "lite")
 	ctx := context.Background()
