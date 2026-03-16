@@ -83,6 +83,10 @@ func (s *SQLiteStore) QueryMemories(ctx context.Context, query MemoryQuery) ([]*
 		where = append(where, "tags LIKE ? ESCAPE '\\'")
 		args = append(args, "%"+escaped+"%")
 	}
+	if !query.CreatedBefore.IsZero() {
+		where = append(where, "created_at <= ?")
+		args = append(args, query.CreatedBefore.UTC().Format(time.RFC3339))
+	}
 
 	whereClause := ""
 	if len(where) > 0 {

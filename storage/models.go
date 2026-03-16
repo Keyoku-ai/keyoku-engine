@@ -220,7 +220,8 @@ type MemoryQuery struct {
 	Offset     int
 	OrderBy    string
 	Descending bool
-	Cursor     string // Memory ID for keyset/cursor pagination (used instead of Offset when set)
+	Cursor        string    // Memory ID for keyset/cursor pagination (used instead of Offset when set)
+	CreatedBefore time.Time // Only return memories created before this time (for virtual time simulation)
 }
 
 // MemoryUpdate represents fields to update on a memory.

@@ -128,6 +128,8 @@ func New(cfg Config) (*Keyoku, error) {
 		APIKey:   apiKey,
 		Model:    cfg.ExtractionModel,
 		BaseURL:  baseURL,
+		Backend:  cfg.GeminiBackend,
+		Project:  cfg.GCloudProject,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
@@ -150,7 +152,7 @@ func New(cfg Config) (*Keyoku, error) {
 	switch embProvider {
 	case "gemini", "google":
 		var embErr error
-		emb, embErr = embedder.NewGemini(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
+		emb, embErr = embedder.NewGeminiWithBackend(cfg.GeminiAPIKey, cfg.EmbeddingModel, cfg.EmbeddingDimensions, cfg.GeminiBackend, cfg.GCloudProject)
 		if embErr != nil {
 			return nil, fmt.Errorf("failed to create Gemini embedder: %w", embErr)
 		}

@@ -178,6 +178,10 @@ type HeartbeatAnalysisRequest struct {
 	EscalationLevel int      `json:"escalation_level,omitempty"` // 1=casual, 2=direct, 3=offer help, 4+=dropped
 	RecentMessages  []string `json:"recent_messages,omitempty"`  // Last N heartbeat messages for dedup
 	MemoryVelocity  int      `json:"memory_velocity,omitempty"`  // New memories since last act
+
+	// Signal tier analysis (computed from signal checks, informs urgency)
+	SignalUrgencyTier string `json:"signal_urgency_tier,omitempty"` // "immediate", "elevated", "normal", "low", "confluence"
+	SignalCount       int    `json:"signal_count,omitempty"`        // Total number of active signals
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

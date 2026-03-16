@@ -36,7 +36,7 @@ type HeartbeatResult struct {
 	// LLM prioritization fields (populated only when WithLLMPrioritization is set)
 	PriorityAction string   // The single most important action
 	ActionItems    []string // All items ordered by priority
-	Urgency        string   // "immediate", "soon", "can_wait"
+	Urgency        string   // Canonical: "none", "low", "medium", "high", "critical" (mapped from tier or LLM)
 
 	// Intelligent heartbeat decision metadata
 	DecisionReason     string // "act", "nudge", "suppress_cooldown", "suppress_stale", "suppress_quiet"
@@ -328,13 +328,17 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		checksToRun[c] = true
 	}
 
-	// Helper to build a query with visibility applied
+	// Helper to build a query with visibility and virtual time applied
 	buildQuery := func(q storage.MemoryQuery) storage.MemoryQuery {
 		if visibilityFor != nil {
 			q.VisibilityFor = visibilityFor
 			// When using visibility filtering, don't also filter by agent_id
 			// (VisibilityFor handles the scoping)
 			q.AgentID = ""
+		}
+		// Virtual time: only show memories that existed at this point in time
+		if !cfg.virtualNow.IsZero() {
+			q.CreatedBefore = cfg.virtualNow
 		}
 		return q
 	}

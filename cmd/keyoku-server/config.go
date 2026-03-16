@@ -25,6 +25,8 @@ type ServerConfig struct {
 	EmbeddingBaseURL    string `json:"embedding_base_url"`
 	EmbeddingProvider   string `json:"embedding_provider"`
 	EmbeddingModel      string `json:"embedding_model"`
+	GeminiBackend       string `json:"gemini_backend"`
+	GCloudProject       string `json:"gcloud_project"`
 	OllamaBaseURL       string `json:"ollama_base_url"`
 	OllamaAPIKey        string `json:"ollama_api_key"`
 	OllamaEmbeddingDims int    `json:"ollama_embedding_dims"`
@@ -117,6 +119,12 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 	}
 	if v := os.Getenv("EMBEDDING_BASE_URL"); v != "" {
 		cfg.EmbeddingBaseURL = v
+	}
+	if v := os.Getenv("KEYOKU_GEMINI_BACKEND"); v != "" {
+		cfg.GeminiBackend = v
+	}
+	if v := os.Getenv("GOOGLE_CLOUD_PROJECT"); v != "" {
+		cfg.GCloudProject = v
 	}
 	if v := os.Getenv("OLLAMA_BASE_URL"); v != "" {
 		cfg.OllamaBaseURL = v
@@ -227,6 +235,12 @@ func (sc ServerConfig) ToKeyokuConfig() keyoku.Config {
 	}
 	if sc.EmbeddingBaseURL != "" {
 		cfg.EmbeddingBaseURL = sc.EmbeddingBaseURL
+	}
+	if sc.GeminiBackend != "" {
+		cfg.GeminiBackend = sc.GeminiBackend
+	}
+	if sc.GCloudProject != "" {
+		cfg.GCloudProject = sc.GCloudProject
 	}
 	if sc.OllamaBaseURL != "" {
 		cfg.OllamaBaseURL = sc.OllamaBaseURL

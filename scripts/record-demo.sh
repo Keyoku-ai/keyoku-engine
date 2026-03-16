@@ -169,7 +169,7 @@ with open('$MEMORIES_FILE') as f:
 with open('$STOPS_FILE') as f:
     stops = json.load(f)
 
-mems = mem_data.get('memories', mem_data if isinstance(mem_data, list) else [])
+mems = mem_data if isinstance(mem_data, list) else mem_data.get('memories', [])
 from datetime import datetime
 vn = datetime.fromisoformat('${VIRTUAL_NOW}'.replace('Z', '+00:00'))
 mem_count = sum(1 for m in mems
@@ -216,7 +216,7 @@ with open('$MEMORIES_FILE') as f:
 with open('$STOPS_FILE') as f:
     stops = json.load(f)
 
-memories = mem_data.get('memories', mem_data if isinstance(mem_data, list) else [])
+memories = mem_data if isinstance(mem_data, list) else mem_data.get('memories', [])
 
 recording = {
     'recorded_at': '${RECORDED_AT}',
