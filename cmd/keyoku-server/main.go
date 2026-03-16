@@ -182,8 +182,20 @@ func main() {
 	mux.HandleFunc("GET /api/v1/teams/{id}/members", handlers.HandleListTeamMembers)
 	mux.HandleFunc("DELETE /api/v1/teams/{id}/members/{agent_id}", handlers.HandleRemoveTeamMember)
 
+	// Graph
+	mux.HandleFunc("GET /api/v1/graph/entities", handlers.HandleListGraphEntities)
+	mux.HandleFunc("GET /api/v1/graph/relationships", handlers.HandleListRelationships)
+	mux.HandleFunc("POST /api/v1/graph/traverse", handlers.HandleGraphTraverse)
+	mux.HandleFunc("POST /api/v1/graph/path", handlers.HandleGraphPath)
+
 	// SSE events
 	mux.HandleFunc("GET /api/v1/events", hub.HandleSSE)
+
+	// Dashboard (embedded SPA, no auth required)
+	dashHandler := dashboardHandler()
+	mux.Handle("/dashboard", http.RedirectHandler("/dashboard/", http.StatusMovedPermanently))
+	mux.Handle("/dashboard/", http.StripPrefix("/dashboard", dashHandler))
+	mux.HandleFunc("GET /dashboard-config", dashboardConfigHandler(sessionToken, cfg.Port))
 
 	// Build CORS allowlist
 	allowedOrigins := buildCORSAllowlist()
@@ -211,6 +223,7 @@ func main() {
 		log.Printf("keyoku-server listening on %s", addr)
 		log.Printf("  db: %s", cfg.DBPath)
 		log.Printf("  provider: %s (%s)", cfg.ExtractionProvider, cfg.ExtractionModel)
+		log.Printf("  dashboard: http://localhost:%d/dashboard/", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
@@ -236,6 +249,12 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Allow health checks without auth
 		if r.URL.Path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Allow dashboard and its config without auth
+		if strings.HasPrefix(r.URL.Path, "/dashboard") {
 			next.ServeHTTP(w, r)
 			return
 		}

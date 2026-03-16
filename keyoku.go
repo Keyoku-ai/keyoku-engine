@@ -691,6 +691,11 @@ func (k *Keyoku) Graph() *GraphService {
 	return &GraphService{graph: k.engine.Graph(), provider: k.provider}
 }
 
+// TraverseFrom performs a breadth-first traversal from an entity.
+func (gs *GraphService) TraverseFrom(ctx context.Context, ownerEntityID string, query engine.GraphQuery) (*engine.TraversalResult, error) {
+	return gs.graph.TraverseFrom(ctx, ownerEntityID, query)
+}
+
 // FindPath finds the shortest path between two entities.
 func (gs *GraphService) FindPath(ctx context.Context, ownerEntityID, fromEntityID, toEntityID string) ([]string, error) {
 	return gs.graph.FindPath(ctx, ownerEntityID, fromEntityID, toEntityID)
