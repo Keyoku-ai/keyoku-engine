@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BSL-1.1
 // Copyright (c) 2026 Keyoku. All rights reserved.
 
+//go:build embed_dashboard
+
 package main
 
 import (

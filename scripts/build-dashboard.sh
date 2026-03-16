@@ -20,6 +20,6 @@ cp -r "$DASHBOARD_DIR/dist/"* "$EMBED_DIR/"
 
 echo "==> Building keyoku-engine with embedded dashboard..."
 cd "$ENGINE_DIR"
-go build ./cmd/keyoku-server/
+go build -tags embed_dashboard ./cmd/keyoku-server/
 
 echo "==> Done! Dashboard embedded at /dashboard/"
