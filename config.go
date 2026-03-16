@@ -25,6 +25,10 @@ type Config struct {
 	AnthropicBaseURL string // e.g., "https://openrouter.ai/api"
 	EmbeddingBaseURL string // e.g., custom embedding endpoint (defaults to OpenAI)
 
+	// Vertex AI (optional — for higher rate limits; uses Application Default Credentials)
+	GeminiBackend  string // "vertex" for Vertex AI, empty for Google AI Studio (default)
+	GCloudProject  string // GCP project ID (required for Vertex AI)
+
 	// Ollama (local inference — no API key required for standard installs)
 	OllamaBaseURL       string // e.g., "http://localhost:11434" (default)
 	OllamaAPIKey        string // optional: set when Ollama is behind bearer-auth middleware

@@ -18,12 +18,24 @@ import (
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
+// ctxKeyVirtualNow is a context key for passing virtual time to recordDecision.
+type ctxKeyVirtualNow struct{}
+
+// virtualNowFromContext returns the virtual time from context, or zero time if not set.
+func virtualNowFromContext(ctx context.Context) time.Time {
+	if v, ok := ctx.Value(ctxKeyVirtualNow{}).(time.Time); ok {
+		return v
+	}
+	return time.Time{}
+}
+
 // evaluateShouldAct determines whether the heartbeat should trigger action.
 // v2: Integrates response rate, confluence, topic dedup, proximity, deltas, and graph enrichment.
 func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) {
 	now := time.Now()
 	if !cfg.virtualNow.IsZero() {
 		now = cfg.virtualNow
+		ctx = context.WithValue(ctx, ctxKeyVirtualNow{}, now)
 	}
 
 	agentID := cfg.agentID
@@ -455,6 +467,7 @@ func (k *Keyoku) recordDecisionFull(ctx context.Context, entityID, agentID, trig
 		TopicEntities:      topicEntities,
 		StateSnapshot:      stateSnapshot,
 		SignalSummaryHash:  summaryHash,
+		ActedAt:            virtualNowFromContext(ctx),
 	}
 	_ = k.store.RecordHeartbeatAction(ctx, action)
 }
@@ -800,8 +813,47 @@ func (k *Keyoku) enrichSignalsWithGraph(ctx context.Context, entityID string, re
 	return contextLines
 }
 
+// mapPriorityUrgency converts PrioritizeActions urgency ("immediate"/"soon"/"can_wait")
+// to the canonical heartbeat urgency enum ("none"/"low"/"medium"/"high"/"critical").
+func mapPriorityUrgency(u string) string {
+	switch u {
+	case "immediate":
+		return "critical"
+	case "soon":
+		return "high"
+	case "can_wait":
+		return "low"
+	default:
+		return ""
+	}
+}
+
+// tierToUrgency maps HighestUrgencyTier to the canonical heartbeat urgency enum.
+// Used as a fallback when LLM prioritization doesn't run or fails.
+func tierToUrgency(tier string) string {
+	switch tier {
+	case TierImmediate:
+		return "critical"
+	case TierElevated:
+		return "high"
+	case TierNormal:
+		return "medium"
+	case TierLow:
+		return "low"
+	case "confluence":
+		return "medium"
+	default:
+		return "none"
+	}
+}
+
 // runLLMPrioritization runs the opt-in LLM prioritization on heartbeat results.
 func (k *Keyoku) runLLMPrioritization(ctx context.Context, cfg *heartbeatConfig, result *HeartbeatResult) {
+	// Always set a baseline urgency from the signal tier analysis
+	if result.Urgency == "" {
+		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
+	}
+
 	if cfg.llmProvider == nil || result.Summary == "" {
 		return
 	}
@@ -813,6 +865,9 @@ func (k *Keyoku) runLLMPrioritization(ctx context.Context, cfg *heartbeatConfig,
 	if err == nil && priorityResp != nil {
 		result.PriorityAction = priorityResp.PriorityAction
 		result.ActionItems = priorityResp.ActionItems
-		result.Urgency = priorityResp.Urgency
+		// Map LLM urgency to canonical enum; keep tier-based fallback if mapping fails
+		if mapped := mapPriorityUrgency(priorityResp.Urgency); mapped != "" {
+			result.Urgency = mapped
+		}
 	}
 }

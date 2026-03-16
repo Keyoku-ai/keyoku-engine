@@ -423,6 +423,8 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				EscalationLevel:    hbResult.EscalationLevel,
 				RecentMessages:     resp.RecentMessages,
 				MemoryVelocity:     hbResult.MemoryVelocity,
+				SignalUrgencyTier:  hbResult.HighestUrgencyTier,
+				SignalCount:        hbResult.ConfluenceScore,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{

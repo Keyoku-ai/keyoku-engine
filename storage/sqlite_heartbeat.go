@@ -20,6 +20,9 @@ func (s *SQLiteStore) RecordHeartbeatAction(ctx context.Context, action *Heartbe
 		action.ID = ulid.Make().String()
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
+	if !action.ActedAt.IsZero() {
+		now = action.ActedAt.UTC().Format(time.RFC3339)
+	}
 
 	var llmVal *int
 	if action.LLMShouldAct != nil {

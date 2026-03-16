@@ -21,6 +21,13 @@ type GeminiEmbedder struct {
 // If overrideDims > 0, the API is asked to truncate output to that many dimensions
 // (via OutputDimensionality), and the HNSW index is sized accordingly.
 func NewGemini(apiKey, model string, overrideDims int) (*GeminiEmbedder, error) {
+	return NewGeminiWithBackend(apiKey, model, overrideDims, "", "")
+}
+
+// NewGeminiWithBackend creates a Gemini embedder with explicit backend selection.
+// backend: "vertex" for Vertex AI, anything else for Google AI Studio (default).
+// project: GCP project ID, required for Vertex AI.
+func NewGeminiWithBackend(apiKey, model string, overrideDims int, backend, project string) (*GeminiEmbedder, error) {
 	if model == "" {
 		model = "gemini-embedding-001"
 	}
@@ -32,10 +39,19 @@ func NewGemini(apiKey, model string, overrideDims int) (*GeminiEmbedder, error) 
 		dims = overrideDims
 	}
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
+
+	cfg := &genai.ClientConfig{}
+	if backend == "vertex" {
+		cfg.Backend = genai.BackendVertexAI
+		cfg.Project = project
+		cfg.Location = "us-central1"
+		// Vertex AI uses ADC — no API key.
+	} else {
+		cfg.Backend = genai.BackendGeminiAPI
+		cfg.APIKey = apiKey
+	}
+
+	client, err := genai.NewClient(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
 	}

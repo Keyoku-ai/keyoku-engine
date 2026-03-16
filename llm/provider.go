@@ -60,18 +60,20 @@ type ProviderConfig struct {
 	APIKey   string
 	Model    string
 	BaseURL  string // Optional: custom base URL (for OpenRouter, LiteLLM, etc.)
+	Backend  string // Optional: "vertex" for Vertex AI (Gemini only)
+	Project  string // Optional: GCP project ID (required for Vertex AI)
 }
 
 // NewProvider creates a new LLM provider based on configuration.
 func NewProvider(cfg ProviderConfig) (Provider, error) {
-	// Ollama does not require an API key for standard local installs.
-	if cfg.APIKey == "" && cfg.Provider != "ollama" {
+	// Ollama and Vertex AI do not require an API key.
+	if cfg.APIKey == "" && cfg.Provider != "ollama" && cfg.Backend != "vertex" {
 		return nil, fmt.Errorf("API key is required for provider %s", cfg.Provider)
 	}
 
 	switch cfg.Provider {
 	case "google", "gemini":
-		return NewGeminiProvider(cfg.APIKey, cfg.Model)
+		return NewGeminiProviderWithBackend(cfg.APIKey, cfg.Model, cfg.Backend, cfg.Project)
 	case "openai":
 		return NewOpenAIProvider(cfg.APIKey, cfg.Model, cfg.BaseURL)
 	case "anthropic":
@@ -468,6 +470,9 @@ const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning syste
 ### Memory Velocity
 %s
 
+### Signal Urgency Tier (computed from signal analysis)
+%s
+
 ### Recent Heartbeat Messages (DO NOT repeat these)
 %s
 
@@ -485,6 +490,7 @@ Cross-reference the agent's current activity with ALL signals. You are a fully a
 9. **Time of Day**: Adjust tone and verbosity. Morning = energetic, evening = brief, late_night/quiet = only if truly urgent.
 10. **Escalation**: If escalation level > 1, you've mentioned this before. Level 2 = be more direct. Level 3 = offer specific help. Level 4+ = drop it unless urgent.
 11. **Dedup**: NEVER repeat or paraphrase recent heartbeat messages. Say something new or say nothing.
+12. **Signal Urgency Tier**: The system has already computed a signal urgency tier based on the types of active signals. Use this as a FLOOR for your urgency rating. If the tier is "immediate", urgency should be "high" or "critical". If "elevated", at least "medium". If "normal", at least "low". You may go higher than the floor based on context, but never lower.
 
 Tailor your response to the autonomy level:
 - observe: action_brief = observations, user_facing = "FYI: ..." informational notes
@@ -555,6 +561,12 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 				return "(no new memories since last check)"
 			}
 			return fmt.Sprintf("%d new memories since last heartbeat action — a lot has happened, reference the new context", req.MemoryVelocity)
+		}(),
+		func() string {
+			if req.SignalUrgencyTier == "" {
+				return "(not computed)"
+			}
+			return fmt.Sprintf("%s (%d active signals) — use this as the MINIMUM urgency floor", req.SignalUrgencyTier, req.SignalCount)
 		}(),
 		formatList(req.RecentMessages),
 	)
