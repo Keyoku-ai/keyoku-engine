@@ -4,6 +4,7 @@
 package vectorindex
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,6 +278,68 @@ func TestHNSW_Load_InvalidFile(t *testing.T) {
 	err := h.Load(path)
 	if err == nil {
 		t.Error("expected error for invalid file")
+	}
+}
+
+func TestHNSW_Load_DimensionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dim-mismatch.hnsw")
+
+	h1 := NewHNSW(DefaultHNSWConfig(1536))
+	if err := h1.Add("a", make([]float32, 1536)); err != nil {
+		t.Fatalf("setup add error = %v", err)
+	}
+	if err := h1.Save(path); err != nil {
+		t.Fatalf("save error = %v", err)
+	}
+
+	h2 := NewHNSW(DefaultHNSWConfig(768))
+	err := h2.Load(path)
+	if err == nil {
+		t.Fatal("expected dimension mismatch error")
+	}
+}
+
+func TestHNSW_Load_InvalidNeighborIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad-neighbor.hnsw")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	defer f.Close()
+
+	// Header
+	mustWrite := func(v any) {
+		if err := binary.Write(f, binary.LittleEndian, v); err != nil {
+			t.Fatalf("binary write failed: %v", err)
+		}
+	}
+	mustWrite(uint32(0x484E5357)) // magic HNSW
+	mustWrite(int32(3))            // dims
+	mustWrite(int32(16))           // M
+	mustWrite(int32(0))            // max level
+	mustWrite(int32(0))            // entry index
+	mustWrite(int32(1))            // node count
+
+	id := []byte("a")
+	mustWrite(int32(len(id)))
+	if _, err := f.Write(id); err != nil {
+		t.Fatalf("write id: %v", err)
+	}
+	mustWrite([]float32{1, 0, 0}) // vector
+	mustWrite(int32(1))           // layer count
+	mustWrite(int32(1))           // conn count for layer 0
+	mustWrite(int32(-1))          // INVALID connection index
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
+
+	h := newTestHNSW()
+	err = h.Load(path)
+	if err == nil {
+		t.Fatal("expected invalid connection index error")
 	}
 }
 

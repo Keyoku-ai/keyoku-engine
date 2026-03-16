@@ -162,7 +162,7 @@ func (h *HNSW) Remove(id string) error {
 	node := h.nodes[ix]
 	for l := range node.layers {
 		for _, neighborIx := range node.layers[l] {
-			if neighborIx < len(h.nodes) {
+			if neighborIx >= 0 && neighborIx < len(h.nodes) {
 				neighbor := h.nodes[neighborIx]
 				if l < len(neighbor.layers) {
 					filtered := make([]int, 0, len(neighbor.layers[l]))
@@ -294,12 +294,15 @@ func (h *HNSW) searchLayer(query []float32, entryIx int, ef int, layer int) []ca
 		}
 
 		for _, neighborIx := range h.nodes[c.ix].layers[layer] {
+			if neighborIx < 0 || neighborIx >= len(h.nodes) {
+				continue
+			}
 			if visited[neighborIx] {
 				continue
 			}
 			visited[neighborIx] = true
 
-			if neighborIx >= len(h.nodes) || h.nodes[neighborIx].vector == nil {
+			if h.nodes[neighborIx].vector == nil {
 				continue
 			}
 
@@ -342,7 +345,7 @@ func (h *HNSW) pruneConnections(nodeVec []float32, connections []int, maxConn in
 	}
 	dists := make([]connDist, 0, len(connections))
 	for _, cix := range connections {
-		if cix < len(h.nodes) && h.nodes[cix].vector != nil {
+		if cix >= 0 && cix < len(h.nodes) && h.nodes[cix].vector != nil {
 			dists = append(dists, connDist{ix: cix, dist: CosineDistance(nodeVec, h.nodes[cix].vector)})
 		}
 	}
@@ -450,21 +453,37 @@ func (h *HNSW) Load(path string) error {
 		return fmt.Errorf("invalid HNSW file magic: %x", magic)
 	}
 
+	expectedDims := h.cfg.Dimensions
+
 	var dims, m, maxLvl, entryIx int32
 	if err := binary.Read(f, binary.LittleEndian, &dims); err != nil {
 		return err
 	}
+	if dims <= 0 {
+		return fmt.Errorf("invalid HNSW dimensions: %d", dims)
+	}
+	if expectedDims > 0 && int(dims) != expectedDims {
+		return fmt.Errorf("HNSW dimensions mismatch: file=%d expected=%d", dims, expectedDims)
+	}
 	if err := binary.Read(f, binary.LittleEndian, &m); err != nil {
 		return err
 	}
+	if m <= 0 {
+		return fmt.Errorf("invalid HNSW M: %d", m)
+	}
 	if err := binary.Read(f, binary.LittleEndian, &maxLvl); err != nil {
 		return err
+	}
+	if maxLvl < 0 {
+		return fmt.Errorf("invalid HNSW max level: %d", maxLvl)
 	}
 	if err := binary.Read(f, binary.LittleEndian, &entryIx); err != nil {
 		return err
 	}
 
-	h.cfg.Dimensions = int(dims)
+	if expectedDims == 0 {
+		h.cfg.Dimensions = int(dims)
+	}
 	h.cfg.M = int(m)
 	h.maxLvl = int(maxLvl)
 	h.entryIx = int(entryIx)
@@ -472,6 +491,19 @@ func (h *HNSW) Load(path string) error {
 	var nodeCount int32
 	if err := binary.Read(f, binary.LittleEndian, &nodeCount); err != nil {
 		return err
+	}
+	if nodeCount < 0 {
+		return fmt.Errorf("invalid HNSW node count: %d", nodeCount)
+	}
+	if nodeCount == 0 {
+		h.nodes = make([]*hnswNode, 0)
+		h.idToIx = make(map[string]int)
+		h.entryIx = -1
+		h.maxLvl = 0
+		return nil
+	}
+	if h.entryIx < 0 || h.entryIx >= int(nodeCount) {
+		return fmt.Errorf("invalid HNSW entry index: %d (nodeCount=%d)", h.entryIx, nodeCount)
 	}
 
 	h.nodes = make([]*hnswNode, 0, nodeCount)
@@ -481,6 +513,9 @@ func (h *HNSW) Load(path string) error {
 		var idLen int32
 		if err := binary.Read(f, binary.LittleEndian, &idLen); err != nil {
 			return err
+		}
+		if idLen <= 0 || idLen > 1<<20 {
+			return fmt.Errorf("invalid HNSW id length: %d", idLen)
 		}
 		idBytes := make([]byte, idLen)
 		if _, err := io.ReadFull(f, idBytes); err != nil {
@@ -497,6 +532,9 @@ func (h *HNSW) Load(path string) error {
 		if err := binary.Read(f, binary.LittleEndian, &layerCount); err != nil {
 			return err
 		}
+		if layerCount <= 0 || layerCount > maxLvl+1 {
+			return fmt.Errorf("invalid HNSW layer count: %d", layerCount)
+		}
 
 		layers := make([][]int, layerCount)
 		for l := int32(0); l < layerCount; l++ {
@@ -504,11 +542,17 @@ func (h *HNSW) Load(path string) error {
 			if err := binary.Read(f, binary.LittleEndian, &connCount); err != nil {
 				return err
 			}
+			if connCount < 0 || connCount > nodeCount*4 {
+				return fmt.Errorf("invalid HNSW connection count: %d", connCount)
+			}
 			conns := make([]int, connCount)
 			for c := int32(0); c < connCount; c++ {
 				var conn int32
 				if err := binary.Read(f, binary.LittleEndian, &conn); err != nil {
 					return err
+				}
+				if conn < 0 || conn >= nodeCount {
+					return fmt.Errorf("invalid HNSW connection index: %d (nodeCount=%d)", conn, nodeCount)
 				}
 				conns[c] = int(conn)
 			}
