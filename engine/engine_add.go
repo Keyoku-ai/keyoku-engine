@@ -21,6 +21,7 @@ type AddRequest struct {
 	SchemaID   string // Optional: custom extraction schema ID
 	TeamID     string                   // Team this memory belongs to
 	Visibility storage.MemoryVisibility // Visibility level (defaults based on team membership)
+	CreatedAt  time.Time                // Optional: override created_at timestamp (for simulation/migration)
 }
 
 // AddResult represents the result of adding memories.
@@ -327,6 +328,10 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 
 	stability := memType.StabilityDays()
 	now := time.Now()
+	createdAt := req.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
 
 	agentID := req.AgentID
 	if agentID == "" {
@@ -371,6 +376,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		ImportanceFactors:  extracted.ImportanceFactors,
 		ConfidenceFactors:  extracted.ConfidenceFactors,
 		Tags:               extracted.Tags,
+		CreatedAt:          createdAt,
 	}
 
 	if err := e.store.CreateMemory(ctx, mem); err != nil {

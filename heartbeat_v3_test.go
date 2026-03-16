@@ -583,7 +583,7 @@ func TestSignalFreshness_BoostsPendingWork(t *testing.T) {
 		CheckPendingWork: TierNormal,
 	}
 
-	boostSignalFreshness(activeSignals, result)
+	boostSignalFreshness(activeSignals, result, time.Now())
 
 	if activeSignals[CheckPendingWork] != TierElevated {
 		t.Errorf("PendingWork tier = %q, want %q (fresh memory should boost Normal→Elevated)", activeSignals[CheckPendingWork], TierElevated)
@@ -600,7 +600,7 @@ func TestSignalFreshness_NoBoostWhenStale(t *testing.T) {
 		CheckPendingWork: TierNormal,
 	}
 
-	boostSignalFreshness(activeSignals, result)
+	boostSignalFreshness(activeSignals, result, time.Now())
 
 	if activeSignals[CheckPendingWork] != TierNormal {
 		t.Errorf("PendingWork tier = %q, want %q (stale memory should not boost)", activeSignals[CheckPendingWork], TierNormal)
@@ -617,7 +617,7 @@ func TestSignalFreshness_BoostsDecaying(t *testing.T) {
 		CheckDecaying: TierLow,
 	}
 
-	boostSignalFreshness(activeSignals, result)
+	boostSignalFreshness(activeSignals, result, time.Now())
 
 	if activeSignals[CheckDecaying] != TierNormal {
 		t.Errorf("Decaying tier = %q, want %q (fresh memory should boost Low→Normal)", activeSignals[CheckDecaying], TierNormal)
@@ -634,7 +634,7 @@ func TestSignalFreshness_NeverBootsAboveElevated(t *testing.T) {
 		CheckPendingWork: TierElevated, // already elevated
 	}
 
-	boostSignalFreshness(activeSignals, result)
+	boostSignalFreshness(activeSignals, result, time.Now())
 
 	if activeSignals[CheckPendingWork] != TierElevated {
 		t.Errorf("PendingWork tier = %q, want %q (should not boost above elevated)", activeSignals[CheckPendingWork], TierElevated)
@@ -835,7 +835,7 @@ func TestHasFreshMemory_ReturnsTrue(t *testing.T) {
 		{ID: "old", CreatedAt: time.Now().Add(-2 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour)},
 		{ID: "fresh", CreatedAt: time.Now().Add(-10 * time.Minute), UpdatedAt: time.Now().Add(-10 * time.Minute)},
 	}
-	if !hasFreshMemory(memories, 30*time.Minute) {
+	if !hasFreshMemory(memories, 30*time.Minute, time.Now()) {
 		t.Error("hasFreshMemory should return true when a memory was created within window")
 	}
 }
@@ -845,7 +845,7 @@ func TestHasFreshMemory_ReturnsFalse(t *testing.T) {
 		{ID: "old1", CreatedAt: time.Now().Add(-2 * time.Hour), UpdatedAt: time.Now().Add(-2 * time.Hour)},
 		{ID: "old2", CreatedAt: time.Now().Add(-3 * time.Hour), UpdatedAt: time.Now().Add(-3 * time.Hour)},
 	}
-	if hasFreshMemory(memories, 30*time.Minute) {
+	if hasFreshMemory(memories, 30*time.Minute, time.Now()) {
 		t.Error("hasFreshMemory should return false when no memory is within window")
 	}
 }
@@ -854,16 +854,16 @@ func TestHasFreshMemory_UpdatedAtCounts(t *testing.T) {
 	memories := []*Memory{
 		{ID: "m1", CreatedAt: time.Now().Add(-5 * time.Hour), UpdatedAt: time.Now().Add(-5 * time.Minute)}, // old creation, fresh update
 	}
-	if !hasFreshMemory(memories, 30*time.Minute) {
+	if !hasFreshMemory(memories, 30*time.Minute, time.Now()) {
 		t.Error("hasFreshMemory should return true when UpdatedAt is within window")
 	}
 }
 
 func TestHasFreshMemory_EmptySlice(t *testing.T) {
-	if hasFreshMemory(nil, 30*time.Minute) {
+	if hasFreshMemory(nil, 30*time.Minute, time.Now()) {
 		t.Error("hasFreshMemory should return false for nil slice")
 	}
-	if hasFreshMemory([]*Memory{}, 30*time.Minute) {
+	if hasFreshMemory([]*Memory{}, 30*time.Minute, time.Now()) {
 		t.Error("hasFreshMemory should return false for empty slice")
 	}
 }

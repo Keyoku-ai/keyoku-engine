@@ -26,10 +26,13 @@ const (
 	PeriodQuiet     = "quiet"      // 23-7: only immediate urgency
 )
 
-// currentTimePeriod returns the current time-of-day tier.
-// Uses the configured quiet hours timezone, falling back to PST.
-// If timePeriodOverride is set (for testing), returns that directly.
+// currentTimePeriod returns the time period for the current wall clock.
 func (k *Keyoku) currentTimePeriod() string {
+	return k.currentTimePeriodAt(time.Now())
+}
+
+// currentTimePeriodAt returns the time period for a specific instant.
+func (k *Keyoku) currentTimePeriodAt(now time.Time) string {
 	if k.timePeriodOverride != "" {
 		return k.timePeriodOverride
 	}
@@ -37,7 +40,7 @@ func (k *Keyoku) currentTimePeriod() string {
 	if k.quietHours.Location != nil {
 		loc = k.quietHours.Location
 	}
-	hour := time.Now().In(loc).Hour()
+	hour := now.In(loc).Hour()
 	switch {
 	case hour >= 7 && hour < 10:
 		return PeriodMorning
@@ -109,6 +112,10 @@ func tierRank(tier string) int {
 // Returns true if current hour accounts for >= 2% of total message volume over the last 14 days,
 // or if there's insufficient data to determine a pattern.
 func (k *Keyoku) isUserTypicallyActive(ctx context.Context, entityID string) bool {
+	return k.isUserTypicallyActiveAt(ctx, entityID, time.Now())
+}
+
+func (k *Keyoku) isUserTypicallyActiveAt(ctx context.Context, entityID string, now time.Time) bool {
 	dist, err := k.store.GetMessageHourDistribution(ctx, entityID, 14)
 	if err != nil || len(dist) == 0 {
 		return true // no data = assume active
@@ -127,7 +134,7 @@ func (k *Keyoku) isUserTypicallyActive(ctx context.Context, entityID string) boo
 	if k.quietHours.Location != nil {
 		loc = k.quietHours.Location
 	}
-	currentHour := time.Now().In(loc).Hour()
+	currentHour := now.In(loc).Hour()
 	hourCount := dist[currentHour]
 	return float64(hourCount)/float64(total) >= 0.02
 }

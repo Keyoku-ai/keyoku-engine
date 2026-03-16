@@ -36,6 +36,7 @@ type rememberRequest struct {
 	SchemaID   string `json:"schema_id,omitempty"`
 	TeamID     string `json:"team_id,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
+	CreatedAt  string `json:"created_at,omitempty"`
 }
 
 type rememberResponse struct {
@@ -91,6 +92,7 @@ type heartbeatCheckRequest struct {
 	MaxResults      int     `json:"max_results,omitempty"`
 	AgentID         string  `json:"agent_id,omitempty"`
 	TeamID          string  `json:"team_id,omitempty"`
+	VirtualNow      string  `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
 }
 
 type heartbeatCheckResponse struct {
@@ -135,6 +137,9 @@ type heartbeatContextRequest struct {
 	NudgeMaxInterval     string `json:"nudge_max_interval,omitempty"`       // e.g. "48h" — cap for backoff decay
 	SignalCooldownNormal string `json:"signal_cooldown_normal,omitempty"`   // e.g. "2h"
 	SignalCooldownLow    string `json:"signal_cooldown_low,omitempty"`      // e.g. "4h"
+
+	// Virtual time override for demo recording
+	VirtualNow string `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
 }
 
 type heartbeatAnalysisJSON struct {

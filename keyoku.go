@@ -319,6 +319,7 @@ type rememberConfig struct {
 	schemaID   string
 	teamID     string
 	visibility storage.MemoryVisibility
+	createdAt  time.Time
 }
 
 // WithSessionID sets the session ID for a Remember call.
@@ -350,6 +351,11 @@ func WithTeamID(id string) RememberOption {
 // WithVisibility sets the visibility level of the memory.
 func WithVisibility(v storage.MemoryVisibility) RememberOption {
 	return func(c *rememberConfig) { c.visibility = v }
+}
+
+// WithCreatedAt overrides the created_at timestamp (for simulation/migration).
+func WithCreatedAt(t time.Time) RememberOption {
+	return func(c *rememberConfig) { c.createdAt = t }
 }
 
 // RememberResult contains the result of a Remember call.
@@ -386,6 +392,7 @@ func (k *Keyoku) Remember(ctx context.Context, entityID, content string, opts ..
 		SchemaID:   cfg.schemaID,
 		TeamID:     teamID,
 		Visibility: cfg.visibility,
+		CreatedAt:  cfg.createdAt,
 	})
 	if err != nil {
 		return nil, err

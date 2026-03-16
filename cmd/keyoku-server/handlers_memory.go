@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
@@ -54,6 +55,14 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Visibility != "" {
 		opts = append(opts, keyoku.WithVisibility(keyoku.MemoryVisibility(req.Visibility)))
+	}
+	if req.CreatedAt != "" {
+		t, err := time.Parse(time.RFC3339, req.CreatedAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid created_at: must be RFC3339 format")
+			return
+		}
+		opts = append(opts, keyoku.WithCreatedAt(t))
 	}
 
 	result, err := h.k.Remember(r.Context(), req.EntityID, req.Content, opts...)

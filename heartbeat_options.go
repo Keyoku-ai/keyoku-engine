@@ -65,6 +65,12 @@ func WithInConversation(inConversation bool) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.inConversation = inConversation }
 }
 
+// WithVirtualNow overrides time.Now() for all signal computation.
+// Used by the demo recording script to simulate heartbeat at different points in time.
+func WithVirtualNow(t time.Time) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.virtualNow = t }
+}
+
 func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
 	return func(c *heartbeatConfig) {
 		c.llmProvider = provider

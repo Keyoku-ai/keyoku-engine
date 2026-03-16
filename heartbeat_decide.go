@@ -21,6 +21,11 @@ import (
 // evaluateShouldAct determines whether the heartbeat should trigger action.
 // v2: Integrates response rate, confluence, topic dedup, proximity, deltas, and graph enrichment.
 func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) {
+	now := time.Now()
+	if !cfg.virtualNow.IsZero() {
+		now = cfg.virtualNow
+	}
+
 	agentID := cfg.agentID
 	if agentID == "" {
 		agentID = "default"
@@ -60,7 +65,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		result.ShouldAct = true
 		result.DecisionReason = "first_contact"
 		result.HighestUrgencyTier = TierNormal
-		result.TimePeriod = k.currentTimePeriod()
+		result.TimePeriod = k.currentTimePeriodAt(now)
 		k.recordDecision(ctx, entityID, agentID, "first_contact", "", "first_contact", TierNormal, 0)
 		return
 	}
@@ -71,7 +76,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 
 	// 1. Deadline proximity — critical deadlines (<1h) force immediate
 	if len(result.Deadlines) > 0 {
-		proximityScore := calculateDeadlineProximity(result.Deadlines)
+		proximityScore := calculateDeadlineProximity(result.Deadlines, now)
 		if proximityScore > 1.0 { // less than 1 hour remaining
 			result.ShouldAct = true
 			result.DecisionReason = "act_deadline_critical"
@@ -82,7 +87,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	}
 
 	// 2. Time-of-day awareness — filter signals by minimum urgency tier
-	period := k.currentTimePeriod()
+	period := k.currentTimePeriodAt(now)
 	result.TimePeriod = period
 	minTier := timePeriodMinTier(period)
 	if tierRank(minTier) > tierRank(TierLow) {
@@ -103,7 +108,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	}
 
 	// 2b. Conversation rhythm — suppress if user is never active at this hour
-	if !k.isUserTypicallyActive(ctx, entityID) {
+	if !k.isUserTypicallyActiveAt(ctx, entityID, now) {
 		// Only suppress if signals aren't elevated+
 		activeSignalsForRhythm := k.classifyActiveSignals(result)
 		highestForRhythm := TierLow
@@ -126,7 +131,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		// Fall back to session message heuristic when plugin doesn't signal
 		recentMsgs, convErr := k.store.GetRecentSessionMessages(ctx, entityID, 1)
 		if convErr == nil && len(recentMsgs) > 0 {
-			inConversation = time.Since(recentMsgs[0].CreatedAt) < 15*time.Minute
+			inConversation = now.Sub(recentMsgs[0].CreatedAt) < 15*time.Minute
 		}
 	}
 	if inConversation {
@@ -137,7 +142,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	activeSignals := k.classifyActiveSignals(result)
 
 	// 4a. Signal freshness boost — recent memories get a one-step tier upgrade
-	boostSignalFreshness(activeSignals, result)
+	boostSignalFreshness(activeSignals, result, now)
 
 	// 4b. Conversation awareness gradient
 	// Default: filter to elevated+ only during active conversation.
@@ -199,7 +204,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	if highestTier == TierImmediate {
 		if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
 			immediateStaleCooldown := 30 * time.Minute
-			if time.Since(lastAct.ActedAt) < immediateStaleCooldown {
+			if now.Sub(lastAct.ActedAt) < immediateStaleCooldown {
 				result.ShouldAct = false
 				result.DecisionReason = "suppress_stale"
 				k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_stale", highestTier, totalSignals)
@@ -237,7 +242,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		}
 		cooldown = time.Duration(float64(cooldown) * multiplier * timePeriodCooldownMultiplier(period))
 
-		if time.Since(lastAct.ActedAt) < cooldown {
+		if now.Sub(lastAct.ActedAt) < cooldown {
 			result.ShouldAct = false
 			result.DecisionReason = "suppress_cooldown"
 			k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_cooldown", highestTier, totalSignals)
@@ -247,7 +252,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 
 	// 12. Novelty check — with time-based escape hatch
 	if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
-		staleDuration := time.Since(lastAct.ActedAt)
+		staleDuration := now.Sub(lastAct.ActedAt)
 		staleEscapeThreshold := params.SignalCooldownNormal * 2
 		if staleDuration < staleEscapeThreshold {
 			// Same signals, not enough time has passed — suppress
@@ -573,9 +578,8 @@ func (k *Keyoku) extractTopicEntities(ctx context.Context, result *HeartbeatResu
 
 // calculateDeadlineProximity scores deadlines by how close they are.
 // Returns the max proximity score (higher = more urgent).
-func calculateDeadlineProximity(deadlines []*Memory) float64 {
+func calculateDeadlineProximity(deadlines []*Memory, now time.Time) float64 {
 	maxScore := 0.0
-	now := time.Now()
 	for _, m := range deadlines {
 		if m.ExpiresAt == nil {
 			continue
@@ -593,8 +597,8 @@ func calculateDeadlineProximity(deadlines []*Memory) float64 {
 }
 
 // hasFreshMemory returns true if any memory was created or updated within the given window.
-func hasFreshMemory(memories []*Memory, window time.Duration) bool {
-	cutoff := time.Now().Add(-window)
+func hasFreshMemory(memories []*Memory, window time.Duration, now time.Time) bool {
+	cutoff := now.Add(-window)
 	for _, m := range memories {
 		if m.CreatedAt.After(cutoff) || m.UpdatedAt.After(cutoff) {
 			return true
@@ -605,7 +609,7 @@ func hasFreshMemory(memories []*Memory, window time.Duration) bool {
 
 // boostSignalFreshness upgrades signal tiers by one level when fresh memories are present.
 // Only boosts specific signal types where recency meaningfully changes urgency.
-func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *HeartbeatResult) {
+func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *HeartbeatResult, now time.Time) {
 	freshWindow := 30 * time.Minute
 
 	boostOne := func(tier string) string {
@@ -620,7 +624,7 @@ func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *H
 	}
 
 	// PendingWork, GoalProgress, KnowledgeGaps: Normal -> Elevated if fresh
-	if _, ok := activeSignals[CheckPendingWork]; ok && hasFreshMemory(result.PendingWork, freshWindow) {
+	if _, ok := activeSignals[CheckPendingWork]; ok && hasFreshMemory(result.PendingWork, freshWindow, now) {
 		activeSignals[CheckPendingWork] = boostOne(activeSignals[CheckPendingWork])
 	}
 	if _, ok := activeSignals[CheckGoalProgress]; ok {
@@ -628,12 +632,12 @@ func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *H
 		for _, g := range result.GoalProgress {
 			goalMemories = append(goalMemories, g.Plan)
 		}
-		if hasFreshMemory(goalMemories, freshWindow) {
+		if hasFreshMemory(goalMemories, freshWindow, now) {
 			activeSignals[CheckGoalProgress] = boostOne(activeSignals[CheckGoalProgress])
 		}
 	}
 	if _, ok := activeSignals[CheckKnowledge]; ok {
-		cutoff := time.Now().Add(-freshWindow)
+		cutoff := now.Add(-freshWindow)
 		for _, g := range result.KnowledgeGaps {
 			if g.AskedAt.After(cutoff) {
 				activeSignals[CheckKnowledge] = boostOne(activeSignals[CheckKnowledge])
@@ -643,7 +647,7 @@ func boostSignalFreshness(activeSignals map[HeartbeatCheckType]string, result *H
 	}
 
 	// Decaying, Sentiment: Low -> Normal if fresh
-	if _, ok := activeSignals[CheckDecaying]; ok && hasFreshMemory(result.Decaying, freshWindow) {
+	if _, ok := activeSignals[CheckDecaying]; ok && hasFreshMemory(result.Decaying, freshWindow, now) {
 		activeSignals[CheckDecaying] = boostOne(activeSignals[CheckDecaying])
 	}
 }

@@ -39,7 +39,7 @@ func TestCheckDuplicate_SemanticDuplicate(t *testing.T) {
 	store := &mockStore{
 		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
 			return []*storage.SimilarityResult{
-				{Memory: existing, Similarity: 0.96},
+				{Memory: existing, Similarity: 0.98},
 			}, nil
 		},
 	}
@@ -50,7 +50,7 @@ func TestCheckDuplicate_SemanticDuplicate(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 	if !result.IsDuplicate {
-		t.Error("expected IsDuplicate = true for similarity >= 0.95")
+		t.Error("expected IsDuplicate = true for similarity >= 0.97")
 	}
 	if result.Action != "skip" {
 		t.Errorf("Action = %q, want %q", result.Action, "skip")
@@ -62,7 +62,7 @@ func TestCheckDuplicate_NearDuplicateSubset(t *testing.T) {
 	store := &mockStore{
 		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
 			return []*storage.SimilarityResult{
-				{Memory: existing, Similarity: 0.90},
+				{Memory: existing, Similarity: 0.95},
 			}, nil
 		},
 	}
@@ -82,7 +82,7 @@ func TestCheckDuplicate_NearDuplicateMerge(t *testing.T) {
 	store := &mockStore{
 		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
 			return []*storage.SimilarityResult{
-				{Memory: existing, Similarity: 0.80},
+				{Memory: existing, Similarity: 0.94},
 			}, nil
 		},
 	}
@@ -226,11 +226,11 @@ func findStr(s, sub string) bool {
 
 func TestDefaultDuplicateConfig(t *testing.T) {
 	cfg := DefaultDuplicateConfig()
-	if cfg.SemanticThreshold != 0.85 {
-		t.Errorf("SemanticThreshold = %v, want 0.85", cfg.SemanticThreshold)
+	if cfg.SemanticThreshold != 0.97 {
+		t.Errorf("SemanticThreshold = %v, want 0.97", cfg.SemanticThreshold)
 	}
-	if cfg.NearDuplicateThreshold != 0.75 {
-		t.Errorf("NearDuplicateThreshold = %v, want 0.75", cfg.NearDuplicateThreshold)
+	if cfg.NearDuplicateThreshold != 0.93 {
+		t.Errorf("NearDuplicateThreshold = %v, want 0.93", cfg.NearDuplicateThreshold)
 	}
 	if !cfg.EnableSemanticDedup {
 		t.Error("EnableSemanticDedup should be true by default")
@@ -282,5 +282,188 @@ func TestNewDuplicateDetector_DefaultConfig(t *testing.T) {
 	}
 	if d.config.MaxCandidates != 10 {
 		t.Errorf("default MaxCandidates = %d, want 10", d.config.MaxCandidates)
+	}
+}
+
+// --- Edge case tests: real-world dedup scenarios ---
+
+// Same topic, different facts — should NOT be deduped.
+// e.g., "Jordan is doing API design" vs "Jordan submitted a PR for transaction state machine"
+// Both mention Jordan and code, but contain completely different information.
+func TestCheckDuplicate_SameTopicDifferentFacts_NotDeduped(t *testing.T) {
+	existing := testMemory("mem-1", "Jordan is handling the API design for NovaPay")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			// Realistic similarity: same person + same project = ~0.82 cosine
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.82},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"Jordan submitted a PR for the transaction state machine", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q — same person/project but different facts should create new memory", result.Action, "create")
+	}
+}
+
+// Same person mentioned in different contexts — should NOT be deduped.
+func TestCheckDuplicate_SamePersonDifferentContext_NotDeduped(t *testing.T) {
+	existing := testMemory("mem-1", "Riley showed mockups for the merchant dashboard with navy blue and white color scheme")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.78},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"Riley found a bug in the Stripe OAuth redirect flow", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q — same person in different context should create", result.Action, "create")
+	}
+}
+
+// Progress update on same task — new info, should NOT be deduped.
+func TestCheckDuplicate_ProgressUpdate_NotDeduped(t *testing.T) {
+	existing := testMemory("mem-1", "User is building the merchant onboarding API endpoints")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.85},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"User finished the merchant onboarding API endpoints and all unit tests pass", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q — progress update should not be deduped", result.Action, "create")
+	}
+}
+
+// Truly identical paraphrase — SHOULD be deduped.
+func TestCheckDuplicate_TrueParaphrase_Deduped(t *testing.T) {
+	existing := testMemory("mem-1", "User enjoys eating pizza")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.98},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"User likes to eat pizza", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "skip" {
+		t.Errorf("Action = %q, want %q — true paraphrase (0.98 similarity) should be skipped", result.Action, "skip")
+	}
+}
+
+// Emotional state update — should NOT be deduped even if similar to previous emotion.
+func TestCheckDuplicate_EmotionalStateUpdate_NotDeduped(t *testing.T) {
+	existing := testMemory("mem-1", "User is feeling good this morning")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.80},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"User is feeling overwhelmed with the demo deadline tomorrow", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q — different emotional state should create", result.Action, "create")
+	}
+}
+
+// High similarity but genuinely new info (e.g., 0.92) — should create, not merge.
+// This is the critical "ambiguous zone" where old thresholds were wrong.
+func TestCheckDuplicate_AmbiguousZone_CreatesNotMerges(t *testing.T) {
+	existing := testMemory("mem-1", "User had coffee at the new place on Hawthorne, ordered a cortado with oat milk")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.88},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"The barista at Hawthorne remembered User's cortado order, made their morning", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q — 0.88 similarity with new info should create, not merge", result.Action, "create")
+	}
+}
+
+// Below similarity threshold — should always create.
+func TestCheckDuplicate_LowSimilarity_Creates(t *testing.T) {
+	existing := testMemory("mem-1", "User likes pizza")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.60},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"User went hiking at Eagle Creek", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "create" {
+		t.Errorf("Action = %q, want %q", result.Action, "create")
+	}
+}
+
+// Near-identical with tiny addition — should merge (not skip, not create).
+func TestCheckDuplicate_NearIdenticalWithAddition_Merges(t *testing.T) {
+	existing := testMemory("mem-1", "User plans to call mom tonight about her birthday")
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existing, Similarity: 0.94},
+			}, nil
+		},
+	}
+	d := NewDuplicateDetector(store, &mockEmbedder{dimensions: 3}, DefaultDuplicateConfig())
+
+	// Very similar but adds "and get pottery class gift card"
+	result, err := d.CheckDuplicate(context.Background(), "entity-1",
+		"User plans to call mom tonight about her birthday and get pottery class gift card", testEmbedding(), "hash-new")
+	if err != nil {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Action != "merge" {
+		t.Errorf("Action = %q, want %q — near-identical content with minor addition should merge", result.Action, "merge")
 	}
 }

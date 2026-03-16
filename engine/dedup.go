@@ -27,8 +27,8 @@ type DuplicateConfig struct {
 
 func DefaultDuplicateConfig() DuplicateConfig {
 	return DuplicateConfig{
-		SemanticThreshold:      0.85, // catch paraphrased duplicates (e.g., same fact stated differently)
-		NearDuplicateThreshold: 0.75, // merge near-duplicates that add minor new info
+		SemanticThreshold:      0.97, // only catch near-identical paraphrases; LLM extraction already handles dedup intelligently
+		NearDuplicateThreshold: 0.93, // merge only when content is almost identical; trust LLM judgment for topical overlap
 		MaxCandidates:          10,
 		EnableSemanticDedup:    true,
 	}

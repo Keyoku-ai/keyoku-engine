@@ -258,6 +258,9 @@ type heartbeatConfig struct {
 
 	// Conversation awareness
 	inConversation bool // Plugin signals that user is actively talking
+
+	// Virtual time override (for demo recording)
+	virtualNow time.Time // When non-zero, replaces time.Now() for all signal computation
 }
 
 // HeartbeatCheckType represents a specific check to run.
@@ -299,6 +302,12 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	}
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	// Resolve "now" — use virtualNow if set, otherwise real clock
+	now := time.Now()
+	if !cfg.virtualNow.IsZero() {
+		now = cfg.virtualNow
 	}
 
 	// Build visibility context for team-aware queries
@@ -361,7 +370,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Descending: true,
 		}))
 		if err == nil {
-			deadlineHorizon := time.Now().Add(cfg.deadlineWindow)
+			deadlineHorizon := now.Add(cfg.deadlineWindow)
 			for _, m := range allActive {
 				if m.ExpiresAt != nil && m.ExpiresAt.Before(deadlineHorizon) {
 					result.Deadlines = append(result.Deadlines, m)
@@ -382,7 +391,6 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Limit:    cfg.maxResults * 5,
 		}))
 		if err == nil {
-			now := time.Now()
 			for _, m := range allActive {
 				sched, err := ParseScheduleFromTags(m.Tags)
 				if err != nil || sched == nil {
@@ -470,7 +478,6 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Limit:    cfg.maxResults * 3,
 		}))
 		if err == nil {
-			now := time.Now()
 			for _, m := range plans {
 				if hasTag(m.Tags, "monitor") {
 					lastAccess := m.CreatedAt
@@ -501,7 +508,6 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Descending: true,
 		}))
 		if err == nil && len(plans) > 0 {
-			now := time.Now()
 			for _, plan := range plans {
 				item := GoalProgressItem{Plan: plan, DaysLeft: -1}
 
@@ -579,7 +585,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		}))
 		if err == nil && len(recent) > 0 {
 			newest := recent[0]
-			sessionAge := time.Since(newest.CreatedAt)
+			sessionAge := now.Sub(newest.CreatedAt)
 
 			if sessionAge < 12*time.Hour {
 				// Session-window filter: only count memories within 2h of the newest as "same session"
@@ -691,7 +697,6 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Limit:         50,
 		})
 		if err == nil {
-			now := time.Now()
 			for _, ent := range entities {
 				if ent.LastMentionedAt == nil {
 					continue
@@ -818,7 +823,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	// Detect positive deltas before decision (so they can trigger action)
 	snapshot := buildStateSnapshot(result)
 	snapshot.MemoryCount = memCount
-	snapshot.MemoryCountAt = time.Now()
+	snapshot.MemoryCountAt = now
 	agentIDForDelta := cfg.agentID
 	if agentIDForDelta == "" {
 		agentIDForDelta = "default"
