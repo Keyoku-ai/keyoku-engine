@@ -110,7 +110,13 @@ func (h *HNSW) Add(id string, vector []float32) error {
 
 	// Traverse from top layer down to lvl+1
 	for l := h.maxLvl; l > lvl; l-- {
-		ep = h.searchLayer(vector, ep, 1, l)[0].ix
+		results := h.searchLayer(vector, ep, 1, l)
+		if len(results) == 0 {
+			// Corrupted/partially rebuilt graph can leave an invalid entry path.
+			// Skip descent on this layer and continue insertion defensively.
+			continue
+		}
+		ep = results[0].ix
 	}
 
 	// Insert at each layer from lvl down to 0
