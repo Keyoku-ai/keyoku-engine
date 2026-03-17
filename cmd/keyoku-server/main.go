@@ -205,13 +205,16 @@ func main() {
 
 	// Create server
 	addr := fmt.Sprintf(":%d", cfg.Port)
+	readTimeout := readDurationEnv("KEYOKU_HTTP_READ_TIMEOUT", 30*time.Second)
+	writeTimeout := readDurationEnv("KEYOKU_HTTP_WRITE_TIMEOUT", 120*time.Second)
+	idleTimeout := readDurationEnv("KEYOKU_HTTP_IDLE_TIMEOUT", 120*time.Second)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    1 << 20, // 1MB
 	}
 
@@ -287,12 +290,27 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 
 // buildCORSAllowlist builds the set of allowed CORS origins.
 // Default: localhost origins. Override with KEYOKU_CORS_ORIGINS env var (comma-separated).
+func readDurationEnv(name string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(name))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	log.Printf("invalid %s=%q; using default %s", name, v, fallback)
+	return fallback
+}
+
 func buildCORSAllowlist() map[string]bool {
 	allowed := map[string]bool{
-		"http://localhost":       true,
-		"http://localhost:3000":  true,
-		"http://localhost:5173":  true,
-		"http://localhost:8080":  true,
+		"http://localhost":      true,
+		"http://localhost:3000": true,
+		"http://localhost:5173": true,
+		"http://localhost:8080": true,
 		"http://127.0.0.1":      true,
 		"http://127.0.0.1:3000": true,
 		"http://127.0.0.1:5173": true,
