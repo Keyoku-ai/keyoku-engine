@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/keyoku-ai/keyoku-engine/vectorindex"
@@ -16,10 +15,11 @@ import (
 
 // SQLiteStore implements Store using SQLite + HNSW vector index.
 type SQLiteStore struct {
-	db     *sql.DB
-	mu     sync.Mutex // serialized writes
-	index  *vectorindex.HNSW
-	dbPath string
+	db        *sql.DB
+	mu        sync.Mutex // serialized writes
+	rebuildMu sync.Mutex // serialized index rebuilds
+	index     *vectorindex.HNSW
+	dbPath    string
 }
 
 // NewSQLite creates a new SQLite-backed store with an HNSW vector index.
@@ -48,13 +48,10 @@ func NewSQLite(dbPath string, dimensions int) (*SQLiteStore, error) {
 	// Try to load HNSW from disk, rebuild from BLOBs if it fails.
 	hnswPath := dbPath + ".hnsw"
 	if err := index.Load(hnswPath); err != nil {
-		log.Printf("WARN: HNSW load failed (path=%s): %v", hnswPath, err)
-		rebuilt, skipped, rebuildErr := s.rebuildIndex()
-		if rebuildErr != nil {
+		if rebuildErr := s.rebuildIndexWithLogging("startup-load", fmt.Errorf("load %s: %w", hnswPath, err)); rebuildErr != nil {
 			db.Close()
 			return nil, fmt.Errorf("failed to rebuild HNSW index after load error: %w", rebuildErr)
 		}
-		log.Printf("INFO: HNSW rebuilt from SQLite embeddings (path=%s rebuilt=%d skipped=%d)", hnswPath, rebuilt, skipped)
 	}
 
 	return s, nil

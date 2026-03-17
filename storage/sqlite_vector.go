@@ -19,7 +19,13 @@ func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, enti
 
 	searchResults, err := s.index.Search(embedding, candidateCount)
 	if err != nil {
-		return nil, fmt.Errorf("HNSW search failed: %w", err)
+		if rebuildErr := s.rebuildIndexWithLogging("runtime-search", err); rebuildErr != nil {
+			return nil, fmt.Errorf("HNSW search failed: %w", err)
+		}
+		searchResults, err = s.index.Search(embedding, candidateCount)
+		if err != nil {
+			return nil, fmt.Errorf("HNSW search failed after rebuild: %w", err)
+		}
 	}
 
 	if len(searchResults) == 0 {
@@ -67,7 +73,13 @@ func (s *SQLiteStore) FindSimilarWithOptions(ctx context.Context, embedding []fl
 
 	searchResults, err := s.index.Search(embedding, candidateCount)
 	if err != nil {
-		return nil, fmt.Errorf("HNSW search failed: %w", err)
+		if rebuildErr := s.rebuildIndexWithLogging("runtime-search", err); rebuildErr != nil {
+			return nil, fmt.Errorf("HNSW search failed: %w", err)
+		}
+		searchResults, err = s.index.Search(embedding, candidateCount)
+		if err != nil {
+			return nil, fmt.Errorf("HNSW search failed after rebuild: %w", err)
+		}
 	}
 
 	if len(searchResults) == 0 {
