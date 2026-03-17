@@ -39,3 +39,11 @@ jobs:
           files: |
             bin/keyoku-server-*
             bin/checksums.txt
+
+      - name: Notify downstream repos
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.BOT_PAT }}
+          repository: keyoku-ai/keyoku-git
+          event-type: engine-release
+          client-payload: '{"version": "${{ github.ref_name }}"}'
