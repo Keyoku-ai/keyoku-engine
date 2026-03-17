@@ -266,6 +266,13 @@ func (h *HNSW) IDs() []string {
 	return ids
 }
 
+// Config returns a copy of the current index configuration.
+func (h *HNSW) Config() HNSWConfig {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.cfg
+}
+
 type candidate struct {
 	ix   int
 	dist float32
