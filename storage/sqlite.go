@@ -15,10 +15,11 @@ import (
 
 // SQLiteStore implements Store using SQLite + HNSW vector index.
 type SQLiteStore struct {
-	db     *sql.DB
-	mu     sync.Mutex // serialized writes
-	index  *vectorindex.HNSW
-	dbPath string
+	db        *sql.DB
+	mu        sync.Mutex // serialized writes
+	rebuildMu sync.Mutex // serialized index rebuilds
+	index     *vectorindex.HNSW
+	dbPath    string
 }
 
 // NewSQLite creates a new SQLite-backed store with an HNSW vector index.
@@ -44,10 +45,13 @@ func NewSQLite(dbPath string, dimensions int) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
-	// Try to load HNSW from disk, rebuild from BLOBs if it fails
+	// Try to load HNSW from disk, rebuild from BLOBs if it fails.
 	hnswPath := dbPath + ".hnsw"
 	if err := index.Load(hnswPath); err != nil {
-		s.rebuildIndex()
+		if rebuildErr := s.rebuildIndexWithLogging("startup-load", fmt.Errorf("load %s: %w", hnswPath, err)); rebuildErr != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to rebuild HNSW index after load error: %w", rebuildErr)
+		}
 	}
 
 	return s, nil

@@ -5,14 +5,17 @@ package storage
 
 import (
 	"fmt"
+
+	"github.com/keyoku-ai/keyoku-engine/vectorindex"
 )
 
 // rebuildIndex reconstructs the HNSW index from embedding BLOBs in SQLite.
-func (s *SQLiteStore) rebuildIndex() {
+// Returns counts for rebuilt and skipped vectors.
+func (s *SQLiteStore) rebuildIndex(index *vectorindex.HNSW) (rebuilt int, skipped int, err error) {
 	rows, err := s.db.Query(
 		`SELECT id, embedding FROM memories WHERE state IN ('active', 'stale') AND embedding IS NOT NULL`)
 	if err != nil {
-		return
+		return 0, 0, err
 	}
 	defer rows.Close()
 
@@ -20,13 +23,26 @@ func (s *SQLiteStore) rebuildIndex() {
 		var id string
 		var embBytes []byte
 		if err := rows.Scan(&id, &embBytes); err != nil {
+			skipped++
 			continue
 		}
 		vec := decodeEmbedding(embBytes)
-		if len(vec) > 0 {
-			s.index.Add(id, vec)
+		if len(vec) == 0 {
+			skipped++
+			continue
 		}
+		if err := index.Add(id, vec); err != nil {
+			skipped++
+			continue
+		}
+		rebuilt++
 	}
+
+	if err := rows.Err(); err != nil {
+		return rebuilt, skipped, err
+	}
+
+	return rebuilt, skipped, nil
 }
 
 // --- Schema Migration ---
