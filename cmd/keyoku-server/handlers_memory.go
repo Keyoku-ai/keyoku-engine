@@ -67,7 +67,7 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.k.Remember(r.Context(), req.EntityID, req.Content, opts...)
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalErrorWithContext(w, "remember", err)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.k.Search(r.Context(), req.EntityID, req.Query, opts...)
 	if err != nil {
-		writeInternalError(w, err)
+		writeInternalErrorWithContext(w, "search", err)
 		return
 	}
 

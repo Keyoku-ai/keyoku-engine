@@ -310,13 +310,38 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+type apiErrorResponse struct {
+	Error     string `json:"error"`
+	Code      string `json:"code,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeJSON(w, status, apiErrorResponse{Error: msg})
+}
+
+func writeErrorCode(w http.ResponseWriter, status int, msg, code string, retryable bool) {
+	writeJSON(w, status, apiErrorResponse{Error: msg, Code: code, Retryable: retryable})
 }
 
 // writeInternalError logs the real error and returns a generic message to the client.
 func writeInternalError(w http.ResponseWriter, err error) {
-	log.Printf("ERROR: %v", err)
+	writeInternalErrorWithContext(w, "", err)
+}
+
+func writeInternalErrorWithContext(w http.ResponseWriter, context string, err error) {
+	if context == "" {
+		log.Printf("ERROR: %v", err)
+	} else {
+		log.Printf("ERROR [%s]: %v", context, err)
+	}
+
+	errStr := err.Error()
+	if strings.Contains(errStr, "HNSW") || strings.Contains(errStr, "similarity search failed") {
+		writeErrorCode(w, http.StatusServiceUnavailable, "vector index unavailable", "vector_index_unavailable", true)
+		return
+	}
+
 	writeError(w, http.StatusInternalServerError, "internal server error")
 }
 

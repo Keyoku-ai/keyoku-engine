@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/keyoku-ai/keyoku-engine/vectorindex"
@@ -44,10 +45,16 @@ func NewSQLite(dbPath string, dimensions int) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
-	// Try to load HNSW from disk, rebuild from BLOBs if it fails
+	// Try to load HNSW from disk, rebuild from BLOBs if it fails.
 	hnswPath := dbPath + ".hnsw"
 	if err := index.Load(hnswPath); err != nil {
-		s.rebuildIndex()
+		log.Printf("WARN: HNSW load failed (path=%s): %v", hnswPath, err)
+		rebuilt, skipped, rebuildErr := s.rebuildIndex()
+		if rebuildErr != nil {
+			db.Close()
+			return nil, fmt.Errorf("failed to rebuild HNSW index after load error: %w", rebuildErr)
+		}
+		log.Printf("INFO: HNSW rebuilt from SQLite embeddings (path=%s rebuilt=%d skipped=%d)", hnswPath, rebuilt, skipped)
 	}
 
 	return s, nil
