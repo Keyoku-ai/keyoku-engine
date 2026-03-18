@@ -75,7 +75,7 @@ func (s *SQLiteStore) CreateMemory(ctx context.Context, mem *Memory) error {
 	if len(mem.Embedding) > 0 {
 		vec := decodeEmbedding(mem.Embedding)
 		if len(vec) > 0 {
-			s.index.Add(mem.ID, vec)
+			s.currentIndex().Add(mem.ID, vec)
 		}
 	}
 
@@ -194,7 +194,7 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id string, hard bool) er
 	if hard {
 		_, err := s.db.ExecContext(ctx, "DELETE FROM memories WHERE id = ?", id)
 		if err == nil {
-			s.index.Remove(id)
+			s.currentIndex().Remove(id)
 		}
 		return err
 	}
@@ -204,7 +204,7 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id string, hard bool) er
 		"UPDATE memories SET state = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
 		now, now, id)
 	if err == nil {
-		s.index.Remove(id)
+		s.currentIndex().Remove(id)
 	}
 	return err
 }

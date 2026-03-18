@@ -54,3 +54,25 @@ func TestWriteInternalErrorWithContext_GenericInternal(t *testing.T) {
 		t.Fatalf("error = %q, want internal server error", body.Error)
 	}
 }
+
+func TestWriteInternalErrorWithContext_SimilarityPrefixWithoutHNSWIs500(t *testing.T) {
+	rr := httptest.NewRecorder()
+
+	writeInternalErrorWithContext(rr, "search", errors.New("similarity search failed: database is locked"))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+
+	var body apiErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	if body.Code != "" {
+		t.Fatalf("code = %q, want empty", body.Code)
+	}
+	if body.Retryable {
+		t.Fatalf("retryable = true, want false")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // --- Vector Search (HNSW-backed) ---
@@ -17,12 +18,15 @@ func (s *SQLiteStore) FindSimilar(ctx context.Context, embedding []float32, enti
 		candidateCount = 50
 	}
 
-	searchResults, err := s.index.Search(embedding, candidateCount)
+	searchResults, err := s.currentIndex().Search(embedding, candidateCount)
 	if err != nil {
+		if !shouldAttemptHNSWRebuild(err) {
+			return nil, fmt.Errorf("HNSW search failed: %w", err)
+		}
 		if rebuildErr := s.rebuildIndexWithLogging("runtime-search", err); rebuildErr != nil {
 			return nil, fmt.Errorf("HNSW search failed: %w", err)
 		}
-		searchResults, err = s.index.Search(embedding, candidateCount)
+		searchResults, err = s.currentIndex().Search(embedding, candidateCount)
 		if err != nil {
 			return nil, fmt.Errorf("HNSW search failed after rebuild: %w", err)
 		}
@@ -71,12 +75,15 @@ func (s *SQLiteStore) FindSimilarWithOptions(ctx context.Context, embedding []fl
 		candidateCount = 50
 	}
 
-	searchResults, err := s.index.Search(embedding, candidateCount)
+	searchResults, err := s.currentIndex().Search(embedding, candidateCount)
 	if err != nil {
+		if !shouldAttemptHNSWRebuild(err) {
+			return nil, fmt.Errorf("HNSW search failed: %w", err)
+		}
 		if rebuildErr := s.rebuildIndexWithLogging("runtime-search", err); rebuildErr != nil {
 			return nil, fmt.Errorf("HNSW search failed: %w", err)
 		}
-		searchResults, err = s.index.Search(embedding, candidateCount)
+		searchResults, err = s.currentIndex().Search(embedding, candidateCount)
 		if err != nil {
 			return nil, fmt.Errorf("HNSW search failed after rebuild: %w", err)
 		}
@@ -197,12 +204,12 @@ func (s *SQLiteStore) SearchFTSWithOptions(ctx context.Context, query string, en
 // --- HNSW Index Management ---
 
 func (s *SQLiteStore) GetHNSWIndexSize() int {
-	return s.index.Len()
+	return s.currentIndex().Len()
 }
 
 func (s *SQLiteStore) GetLowestRankedInHNSW(ctx context.Context, limit int) ([]*Memory, error) {
 	// Get all IDs currently in the HNSW index
-	ids := s.index.IDs()
+	ids := s.currentIndex().IDs()
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -220,5 +227,16 @@ func (s *SQLiteStore) GetLowestRankedInHNSW(ctx context.Context, limit int) ([]*
 }
 
 func (s *SQLiteStore) RemoveFromHNSW(id string) error {
-	return s.index.Remove(id)
+	return s.currentIndex().Remove(id)
+}
+
+func shouldAttemptHNSWRebuild(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	if strings.Contains(errStr, "dimensions") && strings.Contains(errStr, "expected") {
+		return false
+	}
+	return true
 }

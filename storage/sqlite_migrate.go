@@ -5,6 +5,7 @@ package storage
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/keyoku-ai/keyoku-engine/vectorindex"
 )
@@ -24,15 +25,18 @@ func (s *SQLiteStore) rebuildIndex(index *vectorindex.HNSW) (rebuilt int, skippe
 		var embBytes []byte
 		if err := rows.Scan(&id, &embBytes); err != nil {
 			skipped++
+			log.Printf("WARN: HNSW rebuild skipped row: scan failed: %v", err)
 			continue
 		}
 		vec := decodeEmbedding(embBytes)
 		if len(vec) == 0 {
 			skipped++
+			log.Printf("WARN: HNSW rebuild skipped memory id=%s: invalid or empty embedding", id)
 			continue
 		}
 		if err := index.Add(id, vec); err != nil {
 			skipped++
+			log.Printf("WARN: HNSW rebuild skipped memory id=%s: add failed: %v", id, err)
 			continue
 		}
 		rebuilt++

@@ -16,8 +16,9 @@ import (
 // SQLiteStore implements Store using SQLite + HNSW vector index.
 type SQLiteStore struct {
 	db        *sql.DB
-	mu        sync.Mutex // serialized writes
-	rebuildMu sync.Mutex // serialized index rebuilds
+	mu        sync.Mutex   // serialized writes
+	rebuildMu sync.Mutex   // serialized index rebuilds
+	indexMu   sync.RWMutex // protects index pointer swaps
 	index     *vectorindex.HNSW
 	dbPath    string
 }
@@ -60,9 +61,22 @@ func NewSQLite(dbPath string, dimensions int) (*SQLiteStore, error) {
 func (s *SQLiteStore) Close() error {
 	// Persist HNSW index
 	if s.dbPath != "" && s.dbPath != ":memory:" {
-		s.index.Save(s.dbPath + ".hnsw")
+		s.currentIndex().Save(s.dbPath + ".hnsw")
 	}
 	return s.db.Close()
+}
+
+func (s *SQLiteStore) currentIndex() *vectorindex.HNSW {
+	s.indexMu.RLock()
+	idx := s.index
+	s.indexMu.RUnlock()
+	return idx
+}
+
+func (s *SQLiteStore) swapIndex(index *vectorindex.HNSW) {
+	s.indexMu.Lock()
+	s.index = index
+	s.indexMu.Unlock()
 }
 
 // ExecRaw executes a raw SQL statement. Intended for testing with precise control over timestamps.

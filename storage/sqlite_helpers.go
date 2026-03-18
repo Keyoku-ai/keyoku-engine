@@ -195,7 +195,7 @@ func (s *SQLiteStore) TransitionState(ctx context.Context, id string, newState M
 		"UPDATE memories SET state = ?, updated_at = ? WHERE id = ?",
 		string(newState), now, id)
 	if err == nil && (newState == StateDeleted || newState == StateArchived) {
-		s.index.Remove(id)
+		s.currentIndex().Remove(id)
 	}
 	return err
 }
@@ -267,7 +267,7 @@ func (s *SQLiteStore) BatchTransitionStates(ctx context.Context, transitions []S
 		n, _ := result.RowsAffected()
 		affected += int(n)
 		if t.NewState == StateDeleted || t.NewState == StateArchived {
-			s.index.Remove(t.MemoryID)
+			s.currentIndex().Remove(t.MemoryID)
 		}
 	}
 

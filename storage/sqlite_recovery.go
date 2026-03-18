@@ -18,7 +18,7 @@ func (s *SQLiteStore) rebuildIndexWithLogging(context string, cause error) error
 
 	// Rebuild into a fresh index instance so we don't preserve potentially
 	// corrupted in-memory graph state.
-	cfg := s.index.Config()
+	cfg := s.currentIndex().Config()
 	freshIndex := vectorindex.NewHNSW(cfg)
 
 	// Block writers while rebuilding + swapping to avoid dropping concurrent
@@ -31,7 +31,7 @@ func (s *SQLiteStore) rebuildIndexWithLogging(context string, cause error) error
 		return fmt.Errorf("rebuild failed (context=%s): %w", context, err)
 	}
 
-	s.index = freshIndex
+	s.swapIndex(freshIndex)
 	log.Printf("INFO: HNSW rebuild complete (context=%s rebuilt=%d skipped=%d)", context, rebuilt, skipped)
 	return nil
 }
