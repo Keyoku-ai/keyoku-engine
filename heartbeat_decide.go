@@ -851,7 +851,14 @@ func tierToUrgency(tier string) string {
 // AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
 // topics already discussed in conversation. Falls back to basic prioritization
 // if the LLM call fails.
+// AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
+// topics already discussed in conversation. Falls back to basic prioritization
+// if the LLM call fails.
 func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) *llm.HeartbeatAnalysisResponse {
+	// Ensure a baseline urgency is always set even when LLM analysis is skipped.
+	if result != nil && result.Urgency == "" {
+		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
+	}
 	if cfg.llmProvider == nil {
 		return nil
 	}
