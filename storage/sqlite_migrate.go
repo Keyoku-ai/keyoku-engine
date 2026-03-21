@@ -380,6 +380,19 @@ func (s *SQLiteStore) migrate() error {
 	// 'resolved'; if not, we rebuild the table with the updated constraint.
 	s.migrateStateConstraint()
 
+	// Verify that the final memories table definition actually allows 'resolved'
+	// in the state CHECK constraint. If not, fail fast so we don't run with a
+	// partially-migrated schema where state='resolved' writes will error.
+	var tableSQL string
+	err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'`,
+	).Scan(&tableSQL)
+	if err != nil {
+		return fmt.Errorf("verifying memories.state CHECK constraint: %w", err)
+	}
+	if !strings.Contains(tableSQL, "'resolved'") {
+		return fmt.Errorf("memories.state CHECK constraint does not include 'resolved' after migration")
+	}
 	return nil
 }
 
