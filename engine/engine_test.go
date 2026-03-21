@@ -852,3 +852,185 @@ func TestEngine_GetSampleMemories(t *testing.T) {
 		t.Errorf("len = %d, want 5", len(mems))
 	}
 }
+
+// --- containsSubstring tests ---
+
+func TestContainsSubstring_FixedBehavior(t *testing.T) {
+	tests := []struct {
+		content  string
+		query    string
+		expected bool
+	}{
+		{"User likes Go programming", "likes Go", true},
+		{"User likes Go programming", "Go programming", true},
+		{"User likes Go programming", "User likes", true},
+		{"User likes Go programming", "User likes Go programming", true},
+		// This was broken before the fix — middle substrings didn't match
+		{"User likes Go programming and Rust", "Go programming", true},
+		{"abc def ghi", "def", true},
+		{"hello world", "lo wo", true},
+		// Non-matches
+		{"User likes Go", "Python", false},
+		{"short", "this is longer than the content", false},
+		{"", "query", false},
+		{"content", "", false},
+	}
+	for _, tt := range tests {
+		got := containsSubstring(tt.content, tt.query)
+		if got != tt.expected {
+			t.Errorf("containsSubstring(%q, %q) = %v, want %v", tt.content, tt.query, got, tt.expected)
+		}
+	}
+}
+
+// --- findTargetMemory tests ---
+
+func TestFindTargetMemory_SubstringMatch(t *testing.T) {
+	mem := testMemory("mem-1", "User prefers dark mode in VS Code")
+	similar := []*storage.SimilarityResult{
+		{Memory: mem, Similarity: 0.9},
+	}
+	store := &mockStore{}
+	emb := &mockEmbedder{dimensions: 3}
+	e := newTestEngine(store, &mockProvider{}, emb)
+
+	// Exact substring match should work (short query still tries substring)
+	result := e.findTargetMemory(context.Background(), "dark mode", similar, "entity-1", storage.SimilarityOptions{})
+	if result == nil {
+		t.Fatal("expected to find memory via substring match")
+	}
+	if result.ID != "mem-1" {
+		t.Errorf("got ID %q, want mem-1", result.ID)
+	}
+}
+
+func TestFindTargetMemory_ShortQueryNoSubstring(t *testing.T) {
+	mem := testMemory("mem-1", "User prefers dark mode in VS Code")
+	similar := []*storage.SimilarityResult{
+		{Memory: mem, Similarity: 0.9},
+	}
+	store := &mockStore{}
+	emb := &mockEmbedder{dimensions: 3}
+	e := newTestEngine(store, &mockProvider{}, emb)
+
+	// Short query (< 3 words) that doesn't substring-match should return nil
+	// (no embedding fallback for short queries to prevent false positives)
+	result := e.findTargetMemory(context.Background(), "unrelated query", similar, "entity-1", storage.SimilarityOptions{})
+	if result != nil {
+		t.Errorf("expected nil for short non-matching query, got %q", result.ID)
+	}
+}
+
+func TestFindTargetMemory_NoSubstring_EmbeddingFallback(t *testing.T) {
+	mem := testMemory("mem-1", "User prefers dark mode in VS Code")
+	similar := []*storage.SimilarityResult{
+		{Memory: mem, Similarity: 0.9},
+	}
+	store := &mockStore{
+		// The embedding fallback now calls FindSimilarWithOptions (respects agent/visibility)
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: mem, Similarity: 0.88},
+			}, nil
+		},
+	}
+	emb := &mockEmbedder{
+		dimensions: 3,
+		embedFn: func(_ context.Context, text string) ([]float32, error) {
+			return []float32{0.1, 0.2, 0.3}, nil
+		},
+	}
+	e := newTestEngine(store, &mockProvider{}, emb)
+
+	// Query that doesn't substring-match but should be found via embedding
+	result := e.findTargetMemory(context.Background(), "the user's editor theme preference", similar, "entity-1", storage.SimilarityOptions{})
+	if result == nil {
+		t.Fatal("expected to find memory via embedding fallback")
+	}
+	if result.ID != "mem-1" {
+		t.Errorf("got ID %q, want mem-1", result.ID)
+	}
+}
+
+func TestFindTargetMemory_NoMatch(t *testing.T) {
+	mem := testMemory("mem-1", "User prefers dark mode")
+	similar := []*storage.SimilarityResult{
+		{Memory: mem, Similarity: 0.9},
+	}
+	store := &mockStore{
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return nil, nil // No similar results
+		},
+	}
+	emb := &mockEmbedder{dimensions: 3}
+	e := newTestEngine(store, &mockProvider{}, emb)
+
+	result := e.findTargetMemory(context.Background(), "completely unrelated query string", similar, "entity-1", storage.SimilarityOptions{})
+	if result != nil {
+		t.Errorf("expected nil for unrelated query, got memory %q", result.ID)
+	}
+}
+
+func TestFindTargetMemory_NilEmbedder(t *testing.T) {
+	mem := testMemory("mem-1", "User prefers dark mode")
+	similar := []*storage.SimilarityResult{
+		{Memory: mem, Similarity: 0.9},
+	}
+	store := &mockStore{}
+	// No embedder — fallback should return nil when substring doesn't match
+	e := NewEngine(&mockProvider{}, nil, store, DefaultEngineConfig())
+
+	result := e.findTargetMemory(context.Background(), "something completely unrelated here", similar, "entity-1", storage.SimilarityOptions{})
+	if result != nil {
+		t.Errorf("expected nil without embedder, got memory %q", result.ID)
+	}
+}
+
+func TestEngine_Add_WithUpdates_EmbeddingFallback(t *testing.T) {
+	// Test that processUpdate finds a memory via embedding when substring match fails
+	existingMem := testMemory("existing-1", "User prefers Python for data science")
+	var updatedContent string
+	store := &mockStore{
+		// Both the initial similarity search and the fallback in findTargetMemory
+		// now use FindSimilarWithOptions (respects agent/visibility scoping)
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingMem, Similarity: 0.85},
+			}, nil
+		},
+		updateMemoryFn: func(_ context.Context, id string, updates storage.MemoryUpdate) (*storage.Memory, error) {
+			if updates.Content != nil {
+				updatedContent = *updates.Content
+			}
+			return existingMem, nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Updates: []llm.MemoryUpdate{
+					// Query that doesn't substring-match but the LLM generated it as a reference
+					{Query: "the user's programming language preference for data work", NewContent: "User now prefers Julia for data science", Reason: "changed preference"},
+				},
+			}, nil
+		},
+	}
+	emb := &mockEmbedder{
+		dimensions: 3,
+		embedFn: func(_ context.Context, _ string) ([]float32, error) {
+			return []float32{0.1, 0.2, 0.3}, nil
+		},
+	}
+	e := newTestEngine(store, provider, emb)
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I now prefer Julia for data science"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesUpdated != 1 {
+		t.Errorf("MemoriesUpdated = %d, want 1", result.MemoriesUpdated)
+	}
+	if updatedContent != "User now prefers Julia for data science" {
+		t.Errorf("updated content = %q, want 'User now prefers Julia for data science'", updatedContent)
+	}
+}

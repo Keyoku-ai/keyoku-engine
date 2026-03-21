@@ -74,6 +74,7 @@ const (
 	StateStale    MemoryState = "stale"
 	StateArchived MemoryState = "archived"
 	StateDeleted  MemoryState = "deleted"
+	StateResolved MemoryState = "resolved"
 )
 
 // MemoryType represents the type of memory with associated stability.

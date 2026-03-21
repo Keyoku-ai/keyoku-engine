@@ -5,9 +5,11 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
+	"strings"
 
 	"github.com/keyoku-ai/keyoku-engine/embedder"
 	"github.com/keyoku-ai/keyoku-engine/llm"
@@ -164,9 +166,50 @@ func hashContent(content string) string {
 }
 
 func containsSubstring(content, query string) bool {
-	return len(query) > 0 && len(content) > 0 &&
-		(content == query || (len(content) >= len(query) &&
-			(content[:len(query)] == query || content[len(content)-len(query):] == query)))
+	return len(query) > 0 && len(content) > 0 && strings.Contains(content, query)
+}
+
+// findTargetMemory locates the memory that best matches a query string.
+// It first tries exact substring matching against the provided similar results.
+// If that fails, it falls back to embedding-based similarity search using
+// FindSimilarWithOptions to respect agent/visibility scoping.
+func (e *Engine) findTargetMemory(ctx context.Context, query string, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) *storage.Memory {
+	// Reject very short queries — they produce unreliable embedding matches
+	// and risk matching the wrong memory.
+	if len(strings.Fields(query)) < 3 {
+		// Still try exact substring as a safe fallback for short queries
+		for _, sm := range similar {
+			if containsSubstring(sm.Memory.Content, query) {
+				return sm.Memory
+			}
+		}
+		return nil
+	}
+
+	// Strategy 1: exact substring match among already-fetched similar results
+	for _, sm := range similar {
+		if containsSubstring(sm.Memory.Content, query) {
+			return sm.Memory
+		}
+	}
+
+	// Strategy 2: embedding similarity search with agent/visibility scoping
+	if e.embedder == nil {
+		return nil
+	}
+	queryEmbedding, err := e.embedder.Embed(ctx, query)
+	if err != nil || len(queryEmbedding) == 0 {
+		return nil
+	}
+
+	const minSimilarity = 0.85
+	results, err := e.store.FindSimilarWithOptions(ctx, queryEmbedding, entityID, 5, minSimilarity, opts)
+	if err != nil || len(results) == 0 {
+		return nil
+	}
+
+	// Return the highest-scoring match (results are sorted by similarity)
+	return results[0].Memory
 }
 
 func sortResultsByScore(results []*QueryResult) {

@@ -145,9 +145,15 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 		}
 	}
 
+	// Build similarity options for update/delete fallback searches (same scoping as initial search)
+	simOpts := storage.SimilarityOptions{
+		AgentID:       req.AgentID,
+		VisibilityFor: visibilityFor,
+	}
+
 	// Process updates
 	for _, update := range extractResp.Updates {
-		detail, err := e.processUpdate(ctx, update, similarMemories, entityID)
+		detail, err := e.processUpdate(ctx, update, similarMemories, entityID, simOpts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process update: %w", err)
 		}
@@ -159,7 +165,7 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 
 	// Process deletes
 	for _, del := range extractResp.Deletes {
-		detail, err := e.processDelete(ctx, del, similarMemories, entityID)
+		detail, err := e.processDelete(ctx, del, similarMemories, entityID, simOpts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process delete: %w", err)
 		}
@@ -417,14 +423,8 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 }
 
 // processUpdate handles an LLM-suggested update to an existing memory.
-func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, similar []*storage.SimilarityResult, entityID string) (MemoryDetail, error) {
-	var targetMemory *storage.Memory
-	for _, sm := range similar {
-		if containsSubstring(sm.Memory.Content, update.Query) {
-			targetMemory = sm.Memory
-			break
-		}
-	}
+func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) (MemoryDetail, error) {
+	targetMemory := e.findTargetMemory(ctx, update.Query, similar, entityID, opts)
 
 	if targetMemory == nil {
 		return MemoryDetail{
@@ -476,14 +476,8 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 }
 
 // processDelete handles an LLM-suggested deletion.
-func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, similar []*storage.SimilarityResult, entityID string) (MemoryDetail, error) {
-	var targetMemory *storage.Memory
-	for _, sm := range similar {
-		if containsSubstring(sm.Memory.Content, del.Query) {
-			targetMemory = sm.Memory
-			break
-		}
-	}
+func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) (MemoryDetail, error) {
+	targetMemory := e.findTargetMemory(ctx, del.Query, similar, entityID, opts)
 
 	if targetMemory == nil {
 		return MemoryDetail{

@@ -51,9 +51,36 @@ func NewDeliverer(config DeliveryConfig) Deliverer {
 }
 
 // buildDeliveryMessage composes a message from a HeartbeatResult for delivery
-// to an external agent. The message provides context so the agent can speak
-// intelligently about what's happening.
+// to an external agent. When EnhancedAnalysis is available (from
+// runEnhancedLLMAnalysis), the message uses the LLM's structured output which
+// is conversation-aware and suppresses already-discussed topics.
 func buildDeliveryMessage(result *HeartbeatResult) string {
+	// Use enhanced LLM analysis if available
+	if ea := result.EnhancedAnalysis; ea != nil {
+		if !ea.ShouldAct || ea.ActionBrief == "" {
+			return "" // LLM decided nothing worth acting on after context analysis
+		}
+
+		var parts []string
+		parts = append(parts, fmt.Sprintf("[%s] %s", ea.Urgency, ea.ActionBrief))
+
+		if len(ea.RecommendedActions) > 0 {
+			parts = append(parts, "\nActions:")
+			for _, action := range ea.RecommendedActions {
+				parts = append(parts, fmt.Sprintf("- %s", action))
+			}
+		}
+
+		if ea.UserFacing != "" {
+			parts = append(parts, fmt.Sprintf("\nTell the User:\n%s", ea.UserFacing))
+		}
+
+		parts = append(parts, fmt.Sprintf("\nUrgency: %s | Mode: %s", ea.Urgency, ea.Autonomy))
+
+		return strings.Join(parts, "\n")
+	}
+
+	// Fallback: programmatic message assembly (no LLM analysis available)
 	var parts []string
 
 	// Decision context

@@ -352,8 +352,8 @@ func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg 
 		}
 	}
 
-	// LLM prioritization
-	k.runLLMPrioritization(ctx, cfg, result)
+	// Enhanced LLM analysis with conversation context (falls back to basic prioritization)
+	k.runEnhancedLLMAnalysis(ctx, entityID, cfg, result)
 }
 
 // classifyActiveSignals returns a map of check type -> tier for signals that are present.
@@ -847,27 +847,144 @@ func tierToUrgency(tier string) string {
 	}
 }
 
-// runLLMPrioritization runs the opt-in LLM prioritization on heartbeat results.
-func (k *Keyoku) runLLMPrioritization(ctx context.Context, cfg *heartbeatConfig, result *HeartbeatResult) {
-	// Always set a baseline urgency from the signal tier analysis
-	if result.Urgency == "" {
+// runEnhancedLLMAnalysis gathers conversation context and runs the full
+// AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
+// topics already discussed in conversation. Falls back to basic prioritization
+// if the LLM call fails.
+// AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
+// topics already discussed in conversation. Falls back to basic prioritization
+// if the LLM call fails.
+func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cfg *heartbeatConfig, result *HeartbeatResult) *llm.HeartbeatAnalysisResponse {
+	// Ensure a baseline urgency is always set even when LLM analysis is skipped.
+	if result != nil && result.Urgency == "" {
 		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
 	}
+	if cfg.llmProvider == nil {
+		return nil
+	}
 
-	if cfg.llmProvider == nil || result.Summary == "" {
-		return
+	hctx := k.gatherHeartbeatContext(ctx, entityID, result)
+
+	// Build conversation history strings
+	var conversationHistory []string
+	for _, msg := range hctx.RecentMessages {
+		conversationHistory = append(conversationHistory, fmt.Sprintf("[%s] %s: %s",
+			msg.CreatedAt.Format("Jan 2 15:04"), msg.Role, truncate(msg.Content, 200)))
 	}
-	priorityResp, err := cfg.llmProvider.PrioritizeActions(ctx, llm.ActionPriorityRequest{
-		Summary:       result.Summary,
-		AgentContext:  cfg.agentContext,
-		EntityContext: cfg.entityContext,
+
+	// Build relevant memories strings
+	var relevantMemories []string
+	for _, mem := range hctx.RelevantMemories {
+		relevantMemories = append(relevantMemories, fmt.Sprintf("[importance:%.1f] %s",
+			mem.Importance, truncate(mem.Content, 150)))
+	}
+
+	// Build the analysis request from the heartbeat result signals
+	req := llm.HeartbeatAnalysisRequest{
+		ActivitySummary:     hctx.SignalSummary,
+		RelevantMemories:    relevantMemories,
+		ConversationHistory: conversationHistory,
+		Autonomy:            cfg.autonomy,
+		AgentID:             cfg.agentID,
+		EntityID:            entityID,
+		TimePeriod:          result.TimePeriod,
+		EscalationLevel:     result.EscalationLevel,
+		MemoryVelocity:      result.MemoryVelocity,
+		SignalUrgencyTier:   result.HighestUrgencyTier,
+		SignalCount:         countSignals(result),
+	}
+
+	// Populate signal lists
+	for _, m := range result.Scheduled {
+		req.Scheduled = append(req.Scheduled, m.Content)
+	}
+	for _, m := range result.Deadlines {
+		req.Deadlines = append(req.Deadlines, m.Content)
+	}
+	for _, m := range result.PendingWork {
+		req.PendingWork = append(req.PendingWork, m.Content)
+	}
+	for _, c := range result.Conflicts {
+		req.Conflicts = append(req.Conflicts, fmt.Sprintf("%s vs %s", c.MemoryA.Content, c.MemoryB.Content))
+	}
+	for _, g := range result.GoalProgress {
+		req.GoalProgress = append(req.GoalProgress, fmt.Sprintf("[%s] %s", g.Status, g.Plan.Content))
+	}
+	for _, gap := range result.KnowledgeGaps {
+		req.KnowledgeGaps = append(req.KnowledgeGaps, gap.Question)
+	}
+	req.GraphContext = result.GraphContext
+	for _, d := range result.PositiveDeltas {
+		req.PositiveDeltas = append(req.PositiveDeltas, d.Description)
+	}
+
+	// Bound the LLM call to prevent hanging the entire heartbeat pipeline.
+	llmCtx, llmCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer llmCancel()
+
+	resp, err := cfg.llmProvider.AnalyzeHeartbeatContext(llmCtx, req)
+	if err != nil {
+		// Fall back to basic prioritization (uses programmatic urgency, no LLM)
+		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
+		return nil
+	}
+
+	// Apply LLM analysis results to the heartbeat result
+	result.PriorityAction = resp.ActionBrief
+	result.ActionItems = resp.RecommendedActions
+	result.EnhancedAnalysis = resp
+
+	// Normalize LLM urgency (canonical: none/low/medium/high/critical)
+	// to the legacy values expected by mapPriorityUrgency (e.g., immediate/soon/can_wait).
+	normalizedUrgency := strings.TrimSpace(strings.ToLower(resp.Urgency))
+	switch normalizedUrgency {
+	case "none", "low":
+		normalizedUrgency = "can_wait"
+	case "medium":
+		normalizedUrgency = "soon"
+	case "high", "critical":
+		normalizedUrgency = "immediate"
+	}
+
+	if mapped := mapPriorityUrgency(normalizedUrgency); mapped != "" {
+		result.Urgency = mapped
+	}
+
+	return resp
+}
+
+// HeartbeatContext gathers conversation history and relevant memories
+// to provide the LLM analysis step with full context for smarter decisions.
+type HeartbeatContext struct {
+	RecentMessages   []*storage.SessionMessage // Last N conversation messages
+	RelevantMemories []*storage.Memory         // Top memories by importance
+	SignalSummary    string                    // Pre-built signal summary from HeartbeatResult
+}
+
+// gatherHeartbeatContext collects conversation history and high-importance
+// memories for an entity, to be used by LLM analysis during heartbeat delivery.
+func (k *Keyoku) gatherHeartbeatContext(ctx context.Context, entityID string, result *HeartbeatResult) *HeartbeatContext {
+	hctx := &HeartbeatContext{
+		SignalSummary: result.Summary,
+	}
+
+	// Fetch recent conversation messages (last 20)
+	messages, err := k.store.GetRecentSessionMessages(ctx, entityID, 20)
+	if err == nil {
+		hctx.RecentMessages = messages
+	}
+
+	// Fetch top-importance active memories for this entity
+	memories, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+		EntityID:   entityID,
+		States:     []storage.MemoryState{storage.StateActive},
+		Limit:      10,
+		OrderBy:    "importance",
+		Descending: true,
 	})
-	if err == nil && priorityResp != nil {
-		result.PriorityAction = priorityResp.PriorityAction
-		result.ActionItems = priorityResp.ActionItems
-		// Map LLM urgency to canonical enum; keep tier-based fallback if mapping fails
-		if mapped := mapPriorityUrgency(priorityResp.Urgency); mapped != "" {
-			result.Urgency = mapped
-		}
+	if err == nil {
+		hctx.RelevantMemories = memories
 	}
+
+	return hctx
 }

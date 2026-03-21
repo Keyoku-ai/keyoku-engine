@@ -5,10 +5,12 @@ package keyoku
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
@@ -418,5 +420,339 @@ func TestHeartbeatCheck_Scheduled_EveryInterval(t *testing.T) {
 	}
 	if len(result.Scheduled) != 1 {
 		t.Errorf("Scheduled = %d, want 1 (cron:every:2h with 3h since last run)", len(result.Scheduled))
+	}
+}
+
+// --- gatherHeartbeatContext tests ---
+
+func TestGatherHeartbeatContext_WithMessages(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, entityID string, limit int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{ID: "msg-1", EntityID: entityID, Role: "user", Content: "I resolved the auth bug", CreatedAt: now},
+				{ID: "msg-2", EntityID: entityID, Role: "assistant", Content: "Great, marking it as done", CreatedAt: now},
+			}, nil
+		},
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{ID: "mem-1", Content: "Auth bug in login flow", Importance: 0.9, State: storage.StateActive},
+			}, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	result := &HeartbeatResult{Summary: "test signals"}
+	hctx := k.gatherHeartbeatContext(context.Background(), "user-1", result)
+
+	if len(hctx.RecentMessages) != 2 {
+		t.Errorf("RecentMessages = %d, want 2", len(hctx.RecentMessages))
+	}
+	if len(hctx.RelevantMemories) != 1 {
+		t.Errorf("RelevantMemories = %d, want 1", len(hctx.RelevantMemories))
+	}
+	if hctx.SignalSummary != "test signals" {
+		t.Errorf("SignalSummary = %q, want 'test signals'", hctx.SignalSummary)
+	}
+}
+
+func TestGatherHeartbeatContext_EmptyStore(t *testing.T) {
+	store := &testStore{}
+	k := NewForTesting(store)
+	result := &HeartbeatResult{}
+	hctx := k.gatherHeartbeatContext(context.Background(), "user-1", result)
+
+	if len(hctx.RecentMessages) != 0 {
+		t.Errorf("RecentMessages = %d, want 0", len(hctx.RecentMessages))
+	}
+	if len(hctx.RelevantMemories) != 0 {
+		t.Errorf("RelevantMemories = %d, want 0", len(hctx.RelevantMemories))
+	}
+}
+
+func TestResolvedMemoryExcludedFromHeartbeat(t *testing.T) {
+	// StateResolved should not be included in heartbeat queries that filter for StateActive
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			// Verify that queries only ask for active memories
+			for _, s := range q.States {
+				if s == storage.StateResolved {
+					t.Error("heartbeat query should NOT include resolved state")
+				}
+			}
+			return nil, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	_, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork, CheckDeadlines, CheckDecaying))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+}
+
+// --- runEnhancedLLMAnalysis tests ---
+
+func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{ID: "msg-1", EntityID: "user-1", Role: "user", Content: "How is PR #42 going?", CreatedAt: now},
+				{ID: "msg-2", EntityID: "user-1", Role: "assistant", Content: "PR #42 is ready for review", CreatedAt: now},
+			}, nil
+		},
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{ID: "mem-1", Content: "PR #42 needs code review", Importance: 0.9, State: storage.StateActive},
+			}, nil
+		},
+	}
+
+	var capturedReq llm.HeartbeatAnalysisRequest
+	provider := &testLLMProvider{
+		analyzeHeartbeatFn: func(_ context.Context, req llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			capturedReq = req
+			return &llm.HeartbeatAnalysisResponse{
+				ShouldAct:          true,
+				ActionBrief:        "Follow up on deployment after PR merge",
+				RecommendedActions: []string{"Check CI status", "Notify team"},
+				Urgency:            "medium",
+				Reasoning:          "PR discussed but deployment not covered",
+				Autonomy:           "suggest",
+				UserFacing:         "Your PR #42 was merged. Want me to check the deployment?",
+			}, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	cfg := &heartbeatConfig{
+		llmProvider: provider,
+		autonomy:    "suggest",
+		agentID:     "agent-1",
+	}
+	result := &HeartbeatResult{
+		Summary:    "PR #42 merged, deployment pending",
+		TimePeriod: "last 2 hours",
+		PendingWork: []*storage.Memory{
+			{Content: "Deploy after PR merge"},
+		},
+	}
+
+	resp := k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+
+	// Verify the LLM was called
+	if resp == nil {
+		t.Fatal("expected non-nil response from LLM analysis")
+	}
+
+	// Verify conversation history was passed
+	if len(capturedReq.ConversationHistory) != 2 {
+		t.Errorf("ConversationHistory = %d items, want 2", len(capturedReq.ConversationHistory))
+	}
+	if len(capturedReq.ConversationHistory) > 0 && !strings.Contains(capturedReq.ConversationHistory[0], "PR #42") {
+		t.Errorf("ConversationHistory[0] = %q, expected to contain 'PR #42'", capturedReq.ConversationHistory[0])
+	}
+
+	// Verify relevant memories were passed
+	if len(capturedReq.RelevantMemories) != 1 {
+		t.Errorf("RelevantMemories = %d, want 1", len(capturedReq.RelevantMemories))
+	}
+
+	// Verify signals were passed
+	if len(capturedReq.PendingWork) != 1 {
+		t.Errorf("PendingWork = %d, want 1", len(capturedReq.PendingWork))
+	}
+
+	// Verify autonomy was forwarded
+	if capturedReq.Autonomy != "suggest" {
+		t.Errorf("Autonomy = %q, want 'suggest'", capturedReq.Autonomy)
+	}
+
+	// Verify result was updated from LLM response
+	if result.PriorityAction != "Follow up on deployment after PR merge" {
+		t.Errorf("PriorityAction = %q, want LLM's action brief", result.PriorityAction)
+	}
+	if len(result.ActionItems) != 2 {
+		t.Errorf("ActionItems = %d, want 2", len(result.ActionItems))
+	}
+	if result.EnhancedAnalysis == nil {
+		t.Error("EnhancedAnalysis should be set on result")
+	}
+	// "medium" is not in mapPriorityUrgency's mapping (immediate→critical, soon→high, can_wait→low),
+	// so urgency stays unchanged. The EnhancedAnalysis still holds the original LLM urgency.
+	if result.EnhancedAnalysis.Urgency != "medium" {
+		t.Errorf("EnhancedAnalysis.Urgency = %q, want 'medium'", result.EnhancedAnalysis.Urgency)
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_NilProvider(t *testing.T) {
+	k := NewForTesting(&testStore{})
+	cfg := &heartbeatConfig{llmProvider: nil}
+	result := &HeartbeatResult{}
+
+	resp := k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+	if resp != nil {
+		t.Error("expected nil response when provider is nil")
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_LLMError_FallsBack(t *testing.T) {
+	store := &testStore{}
+	provider := &testLLMProvider{
+		analyzeHeartbeatFn: func(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			return nil, errors.New("LLM unavailable")
+		},
+	}
+
+	k := NewForTesting(store)
+	cfg := &heartbeatConfig{llmProvider: provider}
+	result := &HeartbeatResult{
+		Summary:            "test signals",
+		HighestUrgencyTier: "tier_2",
+	}
+
+	resp := k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+
+	if resp != nil {
+		t.Error("expected nil response on LLM error (fallback path)")
+	}
+	// Fallback uses programmatic tierToUrgency instead of another LLM call
+	if result.Urgency == "" {
+		t.Error("expected fallback to set urgency from tier (programmatic, no LLM)")
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_ConversationSuppression(t *testing.T) {
+	// Verify that conversation history is included so the LLM can suppress
+	// topics that were already discussed.
+	now := time.Now()
+	store := &testStore{
+		getRecentSessionMessagesFn: func(_ context.Context, _ string, _ int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{ID: "msg-1", Role: "user", Content: "I already fixed the auth bug", CreatedAt: now},
+				{ID: "msg-2", Role: "assistant", Content: "Great, I'll mark it as resolved", CreatedAt: now},
+			}, nil
+		},
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{ID: "mem-1", Content: "Auth bug in login flow", Importance: 0.9, State: storage.StateActive},
+			}, nil
+		},
+	}
+
+	var capturedReq llm.HeartbeatAnalysisRequest
+	provider := &testLLMProvider{
+		analyzeHeartbeatFn: func(_ context.Context, req llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			capturedReq = req
+			// LLM decides not to act because auth bug was already discussed
+			return &llm.HeartbeatAnalysisResponse{
+				ShouldAct:   false,
+				ActionBrief: "",
+				Urgency:     "none",
+				Reasoning:   "Auth bug already discussed and resolved by user",
+			}, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	cfg := &heartbeatConfig{llmProvider: provider}
+	result := &HeartbeatResult{
+		Summary: "Auth bug detected in login flow",
+		PendingWork: []*storage.Memory{
+			{Content: "Auth bug in login flow"},
+		},
+	}
+
+	resp := k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+
+	// LLM should receive conversation history for suppression
+	if len(capturedReq.ConversationHistory) != 2 {
+		t.Fatalf("ConversationHistory = %d, want 2", len(capturedReq.ConversationHistory))
+	}
+
+	// Verify "auth bug" appears in conversation history
+	found := false
+	for _, msg := range capturedReq.ConversationHistory {
+		if strings.Contains(strings.ToLower(msg), "auth bug") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected conversation history to contain 'auth bug' for suppression")
+	}
+
+	// LLM decided not to act — verify this flows through
+	if resp.ShouldAct {
+		t.Error("LLM should have decided not to act (topic already discussed)")
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_EndToEnd_DeliveryMessage(t *testing.T) {
+	// Test the full pipeline: runEnhancedLLMAnalysis → result.EnhancedAnalysis → buildDeliveryMessage
+	store := &testStore{}
+	provider := &testLLMProvider{
+		analyzeHeartbeatFn: func(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			return &llm.HeartbeatAnalysisResponse{
+				ShouldAct:          true,
+				ActionBrief:        "Deploy v2.1 to staging",
+				RecommendedActions: []string{"Run integration tests", "Notify QA team"},
+				Urgency:            "high",
+				Autonomy:           "act",
+				UserFacing:         "v2.1 is ready for staging deployment",
+			}, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	cfg := &heartbeatConfig{llmProvider: provider, autonomy: "act"}
+	result := &HeartbeatResult{Summary: "v2.1 tagged and ready"}
+
+	k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+
+	// Now test buildDeliveryMessage with the enhanced result
+	msg := buildDeliveryMessage(result)
+
+	if msg == "" {
+		t.Fatal("expected non-empty delivery message")
+	}
+	if !strings.Contains(msg, "Deploy v2.1 to staging") {
+		t.Errorf("message missing action brief, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Run integration tests") {
+		t.Errorf("message missing recommended action, got: %s", msg)
+	}
+	if !strings.Contains(msg, "v2.1 is ready for staging deployment") {
+		t.Errorf("message missing user-facing text, got: %s", msg)
+	}
+	if !strings.Contains(msg, "high") {
+		t.Errorf("message missing urgency, got: %s", msg)
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_ShouldNotAct_EmptyDelivery(t *testing.T) {
+	// When LLM says don't act, delivery message should be empty
+	store := &testStore{}
+	provider := &testLLMProvider{
+		analyzeHeartbeatFn: func(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			return &llm.HeartbeatAnalysisResponse{
+				ShouldAct: false,
+				Urgency:   "none",
+				Reasoning: "Nothing worth mentioning",
+			}, nil
+		},
+	}
+
+	k := NewForTesting(store)
+	cfg := &heartbeatConfig{llmProvider: provider}
+	result := &HeartbeatResult{}
+
+	k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+
+	msg := buildDeliveryMessage(result)
+	if msg != "" {
+		t.Errorf("expected empty delivery message when LLM says don't act, got: %q", msg)
 	}
 }

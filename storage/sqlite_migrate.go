@@ -6,6 +6,7 @@ package storage
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/keyoku-ai/keyoku-engine/vectorindex"
 )
@@ -67,7 +68,7 @@ func (s *SQLiteStore) migrate() error {
 			stability REAL NOT NULL DEFAULT 60,
 			access_count INTEGER NOT NULL DEFAULT 0,
 			last_accessed_at TEXT,
-			state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','stale','archived','deleted')),
+			state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','stale','archived','deleted','resolved')),
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 			expires_at TEXT,
@@ -373,5 +374,109 @@ func (s *SQLiteStore) migrate() error {
 		s.db.Exec(stmt)
 	}
 
+	// Migrate CHECK constraint on state column to include 'resolved'.
+	// SQLite doesn't support ALTER COLUMN, so we inspect the CHECK
+	// constraint definition in sqlite_master to see if it already allows
+	// 'resolved'; if not, we rebuild the table with the updated constraint.
+	s.migrateStateConstraint()
+
+	// Verify that the final memories table definition actually allows 'resolved'
+	// in the state CHECK constraint. If not, fail fast so we don't run with a
+	// partially-migrated schema where state='resolved' writes will error.
+	var tableSQL string
+	err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'`,
+	).Scan(&tableSQL)
+	if err != nil {
+		return fmt.Errorf("verifying memories.state CHECK constraint: %w", err)
+	}
+	if !strings.Contains(tableSQL, "'resolved'") {
+		return fmt.Errorf("memories.state CHECK constraint does not include 'resolved' after migration")
+	}
 	return nil
+}
+
+// migrateStateConstraint rebuilds the memories table if the CHECK constraint
+// on state doesn't include 'resolved'. This is idempotent — on new databases
+// (created with the updated CREATE TABLE) it's a no-op.
+func (s *SQLiteStore) migrateStateConstraint() {
+	// Check the constraint definition directly via sqlite_master.
+	var tableDef string
+	err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'`).Scan(&tableDef)
+	if err != nil {
+		log.Printf("WARN: could not read memories table definition: %v", err)
+		return
+	}
+	if strings.Contains(tableDef, "'resolved'") {
+		return // Constraint already includes 'resolved'
+	}
+
+	// Constraint doesn't allow 'resolved' — rebuild inside a transaction.
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("WARN: state constraint migration: failed to begin tx: %v", err)
+		return
+	}
+	defer tx.Rollback() // no-op after successful commit
+
+	rebuildStmts := []string{
+		`ALTER TABLE memories RENAME TO memories_old`,
+		`CREATE TABLE memories (
+			id TEXT PRIMARY KEY,
+			entity_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT 'default',
+			content TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			embedding BLOB,
+			memory_type TEXT NOT NULL CHECK(memory_type IN ('IDENTITY','PREFERENCE','RELATIONSHIP','EVENT','ACTIVITY','PLAN','CONTEXT','EPHEMERAL')),
+			tags TEXT DEFAULT '[]',
+			importance REAL NOT NULL DEFAULT 0.5,
+			confidence REAL NOT NULL DEFAULT 0.5,
+			stability REAL NOT NULL DEFAULT 60,
+			access_count INTEGER NOT NULL DEFAULT 0,
+			last_accessed_at TEXT,
+			state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','stale','archived','deleted','resolved')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			expires_at TEXT,
+			deleted_at TEXT,
+			version INTEGER NOT NULL DEFAULT 1,
+			source TEXT DEFAULT '',
+			session_id TEXT DEFAULT '',
+			extraction_provider TEXT DEFAULT '',
+			extraction_model TEXT DEFAULT '',
+			importance_factors TEXT DEFAULT '[]',
+			confidence_factors TEXT DEFAULT '[]',
+			sentiment REAL NOT NULL DEFAULT 0,
+			derived_from TEXT DEFAULT '[]',
+			team_id TEXT DEFAULT '',
+			visibility TEXT NOT NULL DEFAULT 'private'
+		)`,
+		`INSERT INTO memories SELECT * FROM memories_old`,
+		`DROP TABLE memories_old`,
+		// Rebuild indexes lost during table recreation
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_id ON memories(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_agent_id ON memories(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_state ON memories(entity_id, state)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_team_visibility ON memories(team_id, visibility)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_created ON memories(entity_id, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_entity_importance ON memories(entity_id, importance DESC)`,
+	}
+	for _, stmt := range rebuildStmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			log.Printf("ERROR: state constraint migration failed (rolling back): %v\nSQL: %s", err, stmt)
+			return // deferred Rollback restores original table
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("ERROR: state constraint migration commit failed: %v", err)
+		return
+	}
+	log.Printf("INFO: migrated memories table CHECK constraint to include 'resolved'")
 }

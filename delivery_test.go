@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
@@ -565,4 +566,79 @@ func TestCLIDeliverer_Deliver_Timeout(t *testing.T) {
 		t.Fatal("expected timeout error")
 	}
 	_ = runner // suppress unused
+}
+
+// --- Enhanced delivery message tests (v4: LLM analysis) ---
+
+func TestBuildDeliveryMessage_EnhancedAnalysis(t *testing.T) {
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		EnhancedAnalysis: &llm.HeartbeatAnalysisResponse{
+			ShouldAct:          true,
+			ActionBrief:        "Review PR #42 in keyoku-engine — stale for 3 days",
+			RecommendedActions: []string{"Review PR #42", "Check CI status"},
+			Urgency:            "medium",
+			Autonomy:           "act",
+			UserFacing:         "I'm going to review PR #42 since it's been open for 3 days.",
+		},
+	}
+	msg := buildDeliveryMessage(result)
+	if !strings.Contains(msg, "Review PR #42") {
+		t.Errorf("expected action brief in message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Check CI status") {
+		t.Errorf("expected recommended action in message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Tell the User") {
+		t.Errorf("expected user-facing section, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Mode: act") {
+		t.Errorf("expected mode in message, got: %s", msg)
+	}
+}
+
+func TestBuildDeliveryMessage_EnhancedAnalysis_ShouldNotAct(t *testing.T) {
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		EnhancedAnalysis: &llm.HeartbeatAnalysisResponse{
+			ShouldAct:   false,
+			ActionBrief: "",
+			Urgency:     "none",
+		},
+	}
+	msg := buildDeliveryMessage(result)
+	if msg != "" {
+		t.Errorf("expected empty message when LLM says don't act, got: %s", msg)
+	}
+}
+
+func TestBuildDeliveryMessage_EnhancedAnalysis_EmptyBrief(t *testing.T) {
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		EnhancedAnalysis: &llm.HeartbeatAnalysisResponse{
+			ShouldAct:   true,
+			ActionBrief: "", // LLM said act but provided no brief
+		},
+	}
+	msg := buildDeliveryMessage(result)
+	if msg != "" {
+		t.Errorf("expected empty message when action brief is empty, got: %s", msg)
+	}
+}
+
+func TestBuildDeliveryMessage_FallbackWithoutEnhanced(t *testing.T) {
+	// When no EnhancedAnalysis, should use original programmatic assembly
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		PriorityAction: "Check the build status",
+		Urgency:        "high",
+		TimePeriod:     "working",
+	}
+	msg := buildDeliveryMessage(result)
+	if !strings.Contains(msg, "Check the build status") {
+		t.Errorf("expected fallback to use PriorityAction, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Urgency: high") {
+		t.Errorf("expected urgency in fallback message, got: %s", msg)
+	}
 }
