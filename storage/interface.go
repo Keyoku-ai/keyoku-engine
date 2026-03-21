@@ -17,6 +17,7 @@ type Store interface {
 	GetMemory(ctx context.Context, id string) (*Memory, error)
 	GetMemoriesByIDs(ctx context.Context, ids []string) ([]*Memory, error)
 	UpdateMemory(ctx context.Context, id string, updates MemoryUpdate) (*Memory, error)
+	ResolveMemory(ctx context.Context, id string) error
 	DeleteMemory(ctx context.Context, id string, hard bool) error
 
 	// Vector search (delegates to HNSW internally)

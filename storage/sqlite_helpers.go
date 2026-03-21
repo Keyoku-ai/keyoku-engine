@@ -227,7 +227,7 @@ func (s *SQLiteStore) GetActiveMemoriesForDecay(ctx context.Context, batchSize, 
 			expires_at, deleted_at, version, source, session_id,
 			extraction_provider, extraction_model, importance_factors, confidence_factors,
 			sentiment, derived_from, visibility
-		FROM memories WHERE state IN ('active', 'stale')
+		FROM memories WHERE state IN ('active', 'stale', 'resolved')
 		ORDER BY created_at ASC LIMIT ? OFFSET ?`, batchSize, offset)
 	if err != nil {
 		return nil, err

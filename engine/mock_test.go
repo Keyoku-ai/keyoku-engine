@@ -14,79 +14,80 @@ import (
 // --- mockStore implements storage.Store ---
 
 type mockStore struct {
-	createMemoryFn                   func(context.Context, *storage.Memory) error
-	getMemoryFn                      func(context.Context, string) (*storage.Memory, error)
-	getMemoriesByIDsFn               func(context.Context, []string) ([]*storage.Memory, error)
-	updateMemoryFn                   func(context.Context, string, storage.MemoryUpdate) (*storage.Memory, error)
-	deleteMemoryFn                   func(context.Context, string, bool) error
-	findSimilarFn                    func(context.Context, []float32, string, int, float64) ([]*storage.SimilarityResult, error)
-	findSimilarWithOptionsFn         func(context.Context, []float32, string, int, float64, storage.SimilarityOptions) ([]*storage.SimilarityResult, error)
-	queryMemoriesFn                  func(context.Context, storage.MemoryQuery) ([]*storage.Memory, error)
-	getRecentMemoriesFn              func(context.Context, string, int, int) ([]*storage.Memory, error)
-	findByHashFn                     func(context.Context, string, string) (*storage.Memory, error)
-	findByHashWithAgentFn            func(context.Context, string, string, string) (*storage.Memory, error)
-	logHistoryFn                     func(context.Context, *storage.HistoryEntry) error
-	getHistoryFn                     func(context.Context, string, int) ([]*storage.HistoryEntry, error)
-	addSessionMessageFn              func(context.Context, *storage.SessionMessage) error
-	getRecentSessionMessagesFn       func(context.Context, string, int) ([]*storage.SessionMessage, error)
-	updateAccessStatsFn              func(context.Context, []string) error
-	updateStabilityFn                func(context.Context, string, float64) error
-	transitionStateFn                func(context.Context, string, storage.MemoryState, string) error
-	getStaleMemoriesFn               func(context.Context, string, float64) ([]*storage.Memory, error)
+	createMemoryFn                    func(context.Context, *storage.Memory) error
+	getMemoryFn                       func(context.Context, string) (*storage.Memory, error)
+	getMemoriesByIDsFn                func(context.Context, []string) ([]*storage.Memory, error)
+	updateMemoryFn                    func(context.Context, string, storage.MemoryUpdate) (*storage.Memory, error)
+	resolveMemoryFn                   func(context.Context, string) error
+	deleteMemoryFn                    func(context.Context, string, bool) error
+	findSimilarFn                     func(context.Context, []float32, string, int, float64) ([]*storage.SimilarityResult, error)
+	findSimilarWithOptionsFn          func(context.Context, []float32, string, int, float64, storage.SimilarityOptions) ([]*storage.SimilarityResult, error)
+	queryMemoriesFn                   func(context.Context, storage.MemoryQuery) ([]*storage.Memory, error)
+	getRecentMemoriesFn               func(context.Context, string, int, int) ([]*storage.Memory, error)
+	findByHashFn                      func(context.Context, string, string) (*storage.Memory, error)
+	findByHashWithAgentFn             func(context.Context, string, string, string) (*storage.Memory, error)
+	logHistoryFn                      func(context.Context, *storage.HistoryEntry) error
+	getHistoryFn                      func(context.Context, string, int) ([]*storage.HistoryEntry, error)
+	addSessionMessageFn               func(context.Context, *storage.SessionMessage) error
+	getRecentSessionMessagesFn        func(context.Context, string, int) ([]*storage.SessionMessage, error)
+	updateAccessStatsFn               func(context.Context, []string) error
+	updateStabilityFn                 func(context.Context, string, float64) error
+	transitionStateFn                 func(context.Context, string, storage.MemoryState, string) error
+	getStaleMemoriesFn                func(context.Context, string, float64) ([]*storage.Memory, error)
 	getAllEntitiesFn                  func(context.Context) ([]string, error)
-	getActiveMemoriesForDecayFn      func(context.Context, int, int) ([]*storage.Memory, error)
-	batchTransitionStatesFn          func(context.Context, []storage.StateTransition) (int, error)
-	createEntityFn                   func(context.Context, *storage.Entity) error
-	getEntityFn                      func(context.Context, string) (*storage.Entity, error)
-	getEntityByNameFn                func(context.Context, string, string, storage.EntityType) (*storage.Entity, error)
-	findEntityByAliasFn              func(context.Context, string, string) (*storage.Entity, error)
-	findSimilarEntitiesFn            func(context.Context, []float32, string, int, float64) ([]*storage.Entity, error)
-	queryEntitiesFn                  func(context.Context, storage.EntityQuery) ([]*storage.Entity, error)
-	updateEntityFn                   func(context.Context, string, map[string]any) (*storage.Entity, error)
-	updateEntityMentionCountFn       func(context.Context, string) error
-	addEntityAliasFn                 func(context.Context, string, string) error
-	deleteEntityFn                   func(context.Context, string) error
-	deleteAllEntitiesForOwnerFn      func(context.Context, string) (int, error)
-	createEntityMentionFn            func(context.Context, *storage.EntityMention) error
-	getEntityMentionsFn              func(context.Context, string, int) ([]*storage.EntityMention, error)
-	getMemoryEntitiesFn              func(context.Context, string) ([]*storage.Entity, error)
-	createRelationshipFn             func(context.Context, *storage.Relationship) error
-	getRelationshipFn                func(context.Context, string) (*storage.Relationship, error)
-	findRelationshipFn               func(context.Context, string, string, string, string) (*storage.Relationship, error)
-	getEntityRelationshipsFn         func(context.Context, string, string, string) ([]*storage.Relationship, error)
-	queryRelationshipsFn             func(context.Context, storage.RelationshipQuery) ([]*storage.Relationship, error)
-	updateRelationshipFn             func(context.Context, string, map[string]any) (*storage.Relationship, error)
-	incrementRelationshipEvidenceFn  func(context.Context, string) error
-	deleteRelationshipFn             func(context.Context, string) error
-	createRelationshipEvidenceFn     func(context.Context, *storage.RelationshipEvidence) error
-	getRelationshipEvidenceFn        func(context.Context, string, int) ([]*storage.RelationshipEvidence, error)
-	getRelationshipPathFn            func(context.Context, string, string, string, int) ([]string, error)
-	deleteAllRelationshipsForOwnerFn func(context.Context, string) (int, error)
-	createSchemaFn                   func(context.Context, *storage.ExtractionSchema) error
-	getSchemaFn                      func(context.Context, string) (*storage.ExtractionSchema, error)
-	getSchemaByNameFn                func(context.Context, string, string) (*storage.ExtractionSchema, error)
-	querySchemasFn                   func(context.Context, storage.SchemaQuery) ([]*storage.ExtractionSchema, error)
-	updateSchemaFn                   func(context.Context, string, map[string]any) (*storage.ExtractionSchema, error)
-	deleteSchemaFn                   func(context.Context, string) error
-	createCustomExtractionFn         func(context.Context, *storage.CustomExtraction) error
-	getCustomExtractionFn            func(context.Context, string) (*storage.CustomExtraction, error)
-	getCustomExtractionsByMemoryFn   func(context.Context, string) ([]*storage.CustomExtraction, error)
-	queryCustomExtractionsFn         func(context.Context, storage.CustomExtractionQuery) ([]*storage.CustomExtraction, error)
-	deleteCustomExtractionFn         func(context.Context, string) error
+	getActiveMemoriesForDecayFn       func(context.Context, int, int) ([]*storage.Memory, error)
+	batchTransitionStatesFn           func(context.Context, []storage.StateTransition) (int, error)
+	createEntityFn                    func(context.Context, *storage.Entity) error
+	getEntityFn                       func(context.Context, string) (*storage.Entity, error)
+	getEntityByNameFn                 func(context.Context, string, string, storage.EntityType) (*storage.Entity, error)
+	findEntityByAliasFn               func(context.Context, string, string) (*storage.Entity, error)
+	findSimilarEntitiesFn             func(context.Context, []float32, string, int, float64) ([]*storage.Entity, error)
+	queryEntitiesFn                   func(context.Context, storage.EntityQuery) ([]*storage.Entity, error)
+	updateEntityFn                    func(context.Context, string, map[string]any) (*storage.Entity, error)
+	updateEntityMentionCountFn        func(context.Context, string) error
+	addEntityAliasFn                  func(context.Context, string, string) error
+	deleteEntityFn                    func(context.Context, string) error
+	deleteAllEntitiesForOwnerFn       func(context.Context, string) (int, error)
+	createEntityMentionFn             func(context.Context, *storage.EntityMention) error
+	getEntityMentionsFn               func(context.Context, string, int) ([]*storage.EntityMention, error)
+	getMemoryEntitiesFn               func(context.Context, string) ([]*storage.Entity, error)
+	createRelationshipFn              func(context.Context, *storage.Relationship) error
+	getRelationshipFn                 func(context.Context, string) (*storage.Relationship, error)
+	findRelationshipFn                func(context.Context, string, string, string, string) (*storage.Relationship, error)
+	getEntityRelationshipsFn          func(context.Context, string, string, string) ([]*storage.Relationship, error)
+	queryRelationshipsFn              func(context.Context, storage.RelationshipQuery) ([]*storage.Relationship, error)
+	updateRelationshipFn              func(context.Context, string, map[string]any) (*storage.Relationship, error)
+	incrementRelationshipEvidenceFn   func(context.Context, string) error
+	deleteRelationshipFn              func(context.Context, string) error
+	createRelationshipEvidenceFn      func(context.Context, *storage.RelationshipEvidence) error
+	getRelationshipEvidenceFn         func(context.Context, string, int) ([]*storage.RelationshipEvidence, error)
+	getRelationshipPathFn             func(context.Context, string, string, string, int) ([]string, error)
+	deleteAllRelationshipsForOwnerFn  func(context.Context, string) (int, error)
+	createSchemaFn                    func(context.Context, *storage.ExtractionSchema) error
+	getSchemaFn                       func(context.Context, string) (*storage.ExtractionSchema, error)
+	getSchemaByNameFn                 func(context.Context, string, string) (*storage.ExtractionSchema, error)
+	querySchemasFn                    func(context.Context, storage.SchemaQuery) ([]*storage.ExtractionSchema, error)
+	updateSchemaFn                    func(context.Context, string, map[string]any) (*storage.ExtractionSchema, error)
+	deleteSchemaFn                    func(context.Context, string) error
+	createCustomExtractionFn          func(context.Context, *storage.CustomExtraction) error
+	getCustomExtractionFn             func(context.Context, string) (*storage.CustomExtraction, error)
+	getCustomExtractionsByMemoryFn    func(context.Context, string) ([]*storage.CustomExtraction, error)
+	queryCustomExtractionsFn          func(context.Context, storage.CustomExtractionQuery) ([]*storage.CustomExtraction, error)
+	deleteCustomExtractionFn          func(context.Context, string) error
 	deleteCustomExtractionsBySchemaFn func(context.Context, string) error
-	getHNSWIndexSizeFn               func() int
-	getLowestRankedInHNSWFn          func(int) ([]*storage.Memory, error)
-	removeFromHNSWFn                 func(string) error
-	createAgentStateFn               func(context.Context, *storage.AgentState) error
-	getAgentStateFn                  func(context.Context, string, string, string) (*storage.AgentState, error)
-	updateAgentStateFn               func(context.Context, string, map[string]any) error
-	getAgentStateHistoryFn           func(context.Context, string, int) ([]*storage.AgentStateHistory, error)
-	logAgentStateHistoryFn           func(context.Context, *storage.AgentStateHistory) error
-	aggregateStatsFn                 func(context.Context, string) (*storage.AggregatedStats, error)
-	sampleMemoriesFn                 func(context.Context, string, int) ([]*storage.Memory, error)
-	searchFTSWithOptionsFn           func(context.Context, string, string, int, storage.SimilarityOptions) ([]*storage.Memory, error)
-	closeFn                          func() error
-	pingFn                           func(context.Context) error
+	getHNSWIndexSizeFn                func() int
+	getLowestRankedInHNSWFn           func(int) ([]*storage.Memory, error)
+	removeFromHNSWFn                  func(string) error
+	createAgentStateFn                func(context.Context, *storage.AgentState) error
+	getAgentStateFn                   func(context.Context, string, string, string) (*storage.AgentState, error)
+	updateAgentStateFn                func(context.Context, string, map[string]any) error
+	getAgentStateHistoryFn            func(context.Context, string, int) ([]*storage.AgentStateHistory, error)
+	logAgentStateHistoryFn            func(context.Context, *storage.AgentStateHistory) error
+	aggregateStatsFn                  func(context.Context, string) (*storage.AggregatedStats, error)
+	sampleMemoriesFn                  func(context.Context, string, int) ([]*storage.Memory, error)
+	searchFTSWithOptionsFn            func(context.Context, string, string, int, storage.SimilarityOptions) ([]*storage.Memory, error)
+	closeFn                           func() error
+	pingFn                            func(context.Context) error
 }
 
 func (m *mockStore) CreateMemory(ctx context.Context, mem *storage.Memory) error {
@@ -115,6 +116,12 @@ func (m *mockStore) UpdateMemory(ctx context.Context, id string, updates storage
 		return m.updateMemoryFn(ctx, id, updates)
 	}
 	return &storage.Memory{ID: id}, nil
+}
+func (m *mockStore) ResolveMemory(ctx context.Context, id string) error {
+	if m.resolveMemoryFn != nil {
+		return m.resolveMemoryFn(ctx, id)
+	}
+	return nil
 }
 func (m *mockStore) DeleteMemory(ctx context.Context, id string, hard bool) error {
 	if m.deleteMemoryFn != nil {
@@ -465,12 +472,14 @@ func (m *mockStore) DeleteCustomExtractionsBySchema(ctx context.Context, schemaI
 	}
 	return nil
 }
-func (m *mockStore) CreateTeam(_ context.Context, _ *storage.Team) error { return nil }
+func (m *mockStore) CreateTeam(_ context.Context, _ *storage.Team) error        { return nil }
 func (m *mockStore) GetTeam(_ context.Context, _ string) (*storage.Team, error) { return nil, nil }
-func (m *mockStore) DeleteTeam(_ context.Context, _ string) error { return nil }
-func (m *mockStore) AddTeamMember(_ context.Context, _, _ string) error { return nil }
-func (m *mockStore) RemoveTeamMember(_ context.Context, _, _ string) error { return nil }
-func (m *mockStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) { return nil, nil }
+func (m *mockStore) DeleteTeam(_ context.Context, _ string) error               { return nil }
+func (m *mockStore) AddTeamMember(_ context.Context, _, _ string) error         { return nil }
+func (m *mockStore) RemoveTeamMember(_ context.Context, _, _ string) error      { return nil }
+func (m *mockStore) GetTeamMembers(_ context.Context, _ string) ([]*storage.TeamMember, error) {
+	return nil, nil
+}
 func (m *mockStore) GetTeamForAgent(_ context.Context, _ string) (string, error) { return "", nil }
 func (m *mockStore) CreateAgentState(ctx context.Context, state *storage.AgentState) error {
 	if m.createAgentStateFn != nil {
@@ -514,38 +523,80 @@ func (m *mockStore) SampleMemories(ctx context.Context, entityID string, limit i
 	}
 	return nil, nil
 }
-func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) { return nil, nil }
+func (m *mockStore) SearchFTS(_ context.Context, _ string, _ string, _ int) ([]*storage.Memory, error) {
+	return nil, nil
+}
 func (m *mockStore) SearchFTSWithOptions(ctx context.Context, query string, entityID string, limit int, opts storage.SimilarityOptions) ([]*storage.Memory, error) {
-	if m.searchFTSWithOptionsFn != nil { return m.searchFTSWithOptionsFn(ctx, query, entityID, limit, opts) }; return nil, nil
+	if m.searchFTSWithOptionsFn != nil {
+		return m.searchFTSWithOptionsFn(ctx, query, entityID, limit, opts)
+	}
+	return nil, nil
 }
 func (m *mockStore) GetHNSWIndexSize() int {
-	if m.getHNSWIndexSizeFn != nil { return m.getHNSWIndexSizeFn() }; return 0
+	if m.getHNSWIndexSizeFn != nil {
+		return m.getHNSWIndexSizeFn()
+	}
+	return 0
 }
 func (m *mockStore) GetLowestRankedInHNSW(_ context.Context, limit int) ([]*storage.Memory, error) {
-	if m.getLowestRankedInHNSWFn != nil { return m.getLowestRankedInHNSWFn(limit) }; return nil, nil
+	if m.getLowestRankedInHNSWFn != nil {
+		return m.getLowestRankedInHNSWFn(limit)
+	}
+	return nil, nil
 }
 func (m *mockStore) RemoveFromHNSW(id string) error {
-	if m.removeFromHNSWFn != nil { return m.removeFromHNSWFn(id) }; return nil
+	if m.removeFromHNSWFn != nil {
+		return m.removeFromHNSWFn(id)
+	}
+	return nil
 }
-func (m *mockStore) RecordHeartbeatAction(_ context.Context, _ *storage.HeartbeatAction) error { return nil }
-func (m *mockStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*storage.HeartbeatAction, error) { return nil, nil }
-func (m *mockStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error) { return 0, nil }
+func (m *mockStore) RecordHeartbeatAction(_ context.Context, _ *storage.HeartbeatAction) error {
+	return nil
+}
+func (m *mockStore) GetLastHeartbeatAction(_ context.Context, _, _, _ string) (*storage.HeartbeatAction, error) {
+	return nil, nil
+}
+func (m *mockStore) GetNudgeCountToday(_ context.Context, _, _ string) (int, error)      { return 0, nil }
 func (m *mockStore) CleanupOldHeartbeatActions(_ context.Context, _ time.Duration) error { return nil }
-func (m *mockStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) { return nil, nil }
-func (m *mockStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
-func (m *mockStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error { return nil }
-func (m *mockStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) { return nil, nil }
-func (m *mockStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) { return 1.0, 0, nil }
-func (m *mockStore) RecordSurfacedMemories(_ context.Context, _, _ string, _ []string) error { return nil }
-func (m *mockStore) GetRecentlySurfacedMemoryIDs(_ context.Context, _, _ string, _ time.Duration) ([]string, error) { return nil, nil }
+func (m *mockStore) GetMessageHourDistribution(_ context.Context, _ string, _ int) (map[int]int, error) {
+	return nil, nil
+}
+func (m *mockStore) GetHeartbeatActionsForResponseCheck(_ context.Context, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+	return nil, nil
+}
+func (m *mockStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (m *mockStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+	return nil, nil
+}
+func (m *mockStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) {
+	return 1.0, 0, nil
+}
+func (m *mockStore) RecordSurfacedMemories(_ context.Context, _, _ string, _ []string) error {
+	return nil
+}
+func (m *mockStore) GetRecentlySurfacedMemoryIDs(_ context.Context, _, _ string, _ time.Duration) ([]string, error) {
+	return nil, nil
+}
 func (m *mockStore) CleanupOldSurfacedMemories(_ context.Context, _ time.Duration) error { return nil }
-func (m *mockStore) UpsertTopicSurfacing(_ context.Context, _ *storage.TopicSurfacing) error { return nil }
-func (m *mockStore) GetTopicSurfacing(_ context.Context, _, _, _ string) (*storage.TopicSurfacing, error) { return nil, nil }
-func (m *mockStore) GetActiveTopicSurfacings(_ context.Context, _, _ string, _ int) ([]*storage.TopicSurfacing, error) { return nil, nil }
+func (m *mockStore) UpsertTopicSurfacing(_ context.Context, _ *storage.TopicSurfacing) error {
+	return nil
+}
+func (m *mockStore) GetTopicSurfacing(_ context.Context, _, _, _ string) (*storage.TopicSurfacing, error) {
+	return nil, nil
+}
+func (m *mockStore) GetActiveTopicSurfacings(_ context.Context, _, _ string, _ int) ([]*storage.TopicSurfacing, error) {
+	return nil, nil
+}
 func (m *mockStore) MarkTopicDropped(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockStore) RecordHeartbeatMessage(_ context.Context, _ *storage.HeartbeatMessage) error { return nil }
-func (m *mockStore) GetRecentHeartbeatMessages(_ context.Context, _, _ string, _ int) ([]*storage.HeartbeatMessage, error) { return nil, nil }
-func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error) { return 0, nil }
+func (m *mockStore) RecordHeartbeatMessage(_ context.Context, _ *storage.HeartbeatMessage) error {
+	return nil
+}
+func (m *mockStore) GetRecentHeartbeatMessages(_ context.Context, _, _ string, _ int) ([]*storage.HeartbeatMessage, error) {
+	return nil, nil
+}
+func (m *mockStore) GetStorageSizeBytes(_ context.Context) (int64, error)             { return 0, nil }
 func (m *mockStore) GetMemoryCount(_ context.Context) (int, error)                    { return 0, nil }
 func (m *mockStore) GetMemoryCountForEntity(_ context.Context, _ string) (int, error) { return 0, nil }
 func (m *mockStore) Close() error {

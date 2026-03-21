@@ -60,6 +60,9 @@ func TestValidateResponse_NilFields(t *testing.T) {
 	if resp.Deletes == nil {
 		t.Error("Deletes should be initialized to empty slice")
 	}
+	if resp.Resolves == nil {
+		t.Error("Resolves should be initialized to empty slice")
+	}
 	if resp.Skipped == nil {
 		t.Error("Skipped should be initialized to empty slice")
 	}
@@ -177,5 +180,20 @@ func TestValidateResponse_FiltersEmptyDeletes(t *testing.T) {
 	}
 	if len(resp.Deletes) != 1 {
 		t.Errorf("expected 1 valid delete, got %d", len(resp.Deletes))
+	}
+}
+
+func TestValidateResponse_FiltersEmptyResolves(t *testing.T) {
+	resp := &ExtractionResponse{
+		Resolves: []MemoryResolve{
+			{Query: "finish task", Reason: "completed"},
+			{Query: "", Reason: "empty query"},
+		},
+	}
+	if err := validateResponse(resp); err != nil {
+		t.Fatalf("validateResponse error = %v", err)
+	}
+	if len(resp.Resolves) != 1 {
+		t.Errorf("expected 1 valid resolve, got %d", len(resp.Resolves))
 	}
 }

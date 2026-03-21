@@ -145,6 +145,26 @@ func TestHeartbeatCheck_PendingWork(t *testing.T) {
 	}
 }
 
+func TestHeartbeatCheck_PendingWork_ResolvedMemoryExcluded(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.States) != 1 || q.States[0] != storage.StateActive {
+				t.Fatalf("states = %v, want [active]", q.States)
+			}
+			return nil, nil
+		},
+	}
+
+	k := &Keyoku{store: store, timePeriodOverride: PeriodWorking}
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if len(result.PendingWork) != 0 {
+		t.Errorf("PendingWork = %d, want 0", len(result.PendingWork))
+	}
+}
+
 func TestHeartbeatCheck_Deadlines(t *testing.T) {
 	expires := time.Now().Add(6 * time.Hour)
 	store := &testStore{

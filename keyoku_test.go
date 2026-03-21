@@ -451,6 +451,9 @@ func TestReExportedConstants(t *testing.T) {
 	if StateActive != storage.StateActive {
 		t.Error("StateActive mismatch")
 	}
+	if StateResolved != storage.StateResolved {
+		t.Error("StateResolved mismatch")
+	}
 	if StateDeleted != storage.StateDeleted {
 		t.Error("StateDeleted mismatch")
 	}

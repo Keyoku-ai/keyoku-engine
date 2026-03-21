@@ -5,12 +5,13 @@ package llm
 
 // ExtractionResponse is the standardized response from any LLM provider.
 type ExtractionResponse struct {
-	Memories      []ExtractedMemory      `json:"memories"`
-	Entities      []ExtractedEntity      `json:"entities,omitempty"`
+	Memories      []ExtractedMemory       `json:"memories"`
+	Entities      []ExtractedEntity       `json:"entities,omitempty"`
 	Relationships []ExtractedRelationship `json:"relationships,omitempty"`
-	Updates       []MemoryUpdate         `json:"updates"`
-	Deletes       []MemoryDelete         `json:"deletes"`
-	Skipped       []SkippedContent       `json:"skipped"`
+	Updates       []MemoryUpdate          `json:"updates"`
+	Deletes       []MemoryDelete          `json:"deletes"`
+	Resolves      []MemoryResolve         `json:"resolves"`
+	Skipped       []SkippedContent        `json:"skipped"`
 }
 
 // ExtractedEntity represents an entity extracted by the LLM.
@@ -56,6 +57,12 @@ type MemoryDelete struct {
 	Reason string `json:"reason"`
 }
 
+// MemoryResolve represents a suggested resolution of an existing memory.
+type MemoryResolve struct {
+	Query  string `json:"query"`
+	Reason string `json:"reason"`
+}
+
 // SkippedContent represents content the LLM decided not to extract.
 type SkippedContent struct {
 	Text   string `json:"text"`
@@ -71,12 +78,12 @@ type ExtractionRequest struct {
 
 // ConsolidationRequest contains memories to consolidate.
 type ConsolidationRequest struct {
-	Memories          []string
-	EntityContext     []string  // "Alice (person)", "Google (organization)"
-	RelationshipContext []string // "Alice works_at Google"
-	ImportanceScores  []float64 // importance score per memory (parallel to Memories)
-	ImportanceFactors []string  // deduplicated importance factors across all memories
-	SentimentValues   []float64 // sentiment per memory (parallel to Memories)
+	Memories            []string
+	EntityContext       []string  // "Alice (person)", "Google (organization)"
+	RelationshipContext []string  // "Alice works_at Google"
+	ImportanceScores    []float64 // importance score per memory (parallel to Memories)
+	ImportanceFactors   []string  // deduplicated importance factors across all memories
+	SentimentValues     []float64 // sentiment per memory (parallel to Memories)
 }
 
 // ConsolidationResponse contains the consolidated memory.
@@ -162,15 +169,15 @@ type HeartbeatAnalysisRequest struct {
 	EntityID         string
 
 	// Extended signals
-	GoalProgress      []string `json:"goal_progress,omitempty"`      // Goal progress descriptions
-	Continuity        string   `json:"continuity,omitempty"`         // Session continuity summary
-	SentimentTrend    string   `json:"sentiment_trend,omitempty"`    // Sentiment direction summary
+	GoalProgress       []string `json:"goal_progress,omitempty"`       // Goal progress descriptions
+	Continuity         string   `json:"continuity,omitempty"`          // Session continuity summary
+	SentimentTrend     string   `json:"sentiment_trend,omitempty"`     // Sentiment direction summary
 	RelationshipAlerts []string `json:"relationship_alerts,omitempty"` // Silent entity alerts
-	KnowledgeGaps     []string `json:"knowledge_gaps,omitempty"`     // Unanswered questions
+	KnowledgeGaps      []string `json:"knowledge_gaps,omitempty"`      // Unanswered questions
 	BehavioralPatterns []string `json:"behavioral_patterns,omitempty"` // Day-of-week patterns
 
 	// v2: Graph enrichment and delta detection
-	GraphContext    []string `json:"graph_context,omitempty"`    // Entity relationship context from knowledge graph
+	GraphContext   []string `json:"graph_context,omitempty"`   // Entity relationship context from knowledge graph
 	PositiveDeltas []string `json:"positive_deltas,omitempty"` // Detected positive changes since last heartbeat
 
 	// v3: Time, escalation, and dedup awareness
@@ -239,19 +246,19 @@ type RerankResult struct {
 // GraphExtractionResponse contains entities and relationships extracted separately.
 // Used by lite models that split extraction into two simpler calls.
 type GraphExtractionResponse struct {
-	Entities      []ExtractedEntity      `json:"entities"`
+	Entities      []ExtractedEntity       `json:"entities"`
 	Relationships []ExtractedRelationship `json:"relationships"`
 }
 
 // StateExtractionRequest contains input for automatic state extraction.
 type StateExtractionRequest struct {
-	Content          string
-	Schema           map[string]any
-	SchemaName       string
-	CurrentState     map[string]any
-	TransitionRules  map[string]any
-	ConversationCtx  []string
-	AgentID          string
+	Content         string
+	Schema          map[string]any
+	SchemaName      string
+	CurrentState    map[string]any
+	TransitionRules map[string]any
+	ConversationCtx []string
+	AgentID         string
 }
 
 // StateExtractionResponse contains the extracted state.

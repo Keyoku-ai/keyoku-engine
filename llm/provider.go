@@ -42,8 +42,8 @@ type Provider interface {
 	AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error)
 	SummarizeGraph(ctx context.Context, req GraphSummaryRequest) (*GraphSummaryResponse, error)
 	RerankMemories(ctx context.Context, req RerankRequest) (*RerankResponse, error)
-	// ExtractMemoriesCore extracts memories, updates, deletes, skipped (no graph data).
-	// Used by lite models that can't handle the full 6-array schema in a single call.
+	// ExtractMemoriesCore extracts memories, updates, deletes, resolves, skipped (no graph data).
+	// Used by lite models that can't handle the full extraction schema in a single call.
 	ExtractMemoriesCore(ctx context.Context, req ExtractionRequest) (*ExtractionResponse, error)
 	// ExtractGraph extracts entities and relationships only.
 	// Called separately after ExtractMemoriesCore for lite models.
@@ -174,8 +174,10 @@ Extract relationships between entities:
 2. Decide what is memory-worthy (YOU are the judge)
 3. Segment into atomic units (one fact per memory)
 4. Classify, score importance, score confidence
-5. Check if this UPDATES or CONTRADICTS existing memories
-   - If user says "actually" or "changed my mind" → suggest UPDATE/DELETE
+5. Check if this UPDATES, RESOLVES, or CONTRADICTS existing memories
+   - If the user corrects a fact ("actually", "changed my mind") → suggest UPDATE or DELETE
+   - If the user says a task/issue/plan is done, resolved, finished, completed, handled, fixed, or no longer needs attention → suggest RESOLVE, not DELETE
+   - Use DELETE only when the memory should be removed entirely, not when it should remain searchable as completed history
    - Reference the context to understand corrections
 6. Normalize content to third person AND prefix with the category keyword so memories are findable by topic:
    - IDENTITY: Start with "User's name is...", "User's age is...", "User's occupation is...", "User lives in..."
@@ -225,6 +227,7 @@ Return JSON matching this exact schema:
   ],
   "updates": [{"query": "string", "new_content": "string", "reason": "string"}],
   "deletes": [{"query": "string", "reason": "string"}],
+  "resolves": [{"query": "string", "reason": "string"}],
   "skipped": [{"text": "string", "reason": "string"}]
 }
 

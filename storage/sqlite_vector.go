@@ -170,7 +170,7 @@ func (s *SQLiteStore) SearchFTSWithOptions(ctx context.Context, query string, en
 	JOIN memories_fts fts ON fts.memory_id = m.id
 	WHERE fts.content MATCH ?
 	AND m.entity_id = ?
-	AND m.state IN ('active', 'stale')`
+	AND m.state IN ('active', 'stale', 'resolved')`
 
 	args := []any{query, entityID}
 

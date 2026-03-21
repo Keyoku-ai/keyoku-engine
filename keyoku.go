@@ -68,6 +68,7 @@ const (
 const (
 	StateActive   = storage.StateActive
 	StateStale    = storage.StateStale
+	StateResolved = storage.StateResolved
 	StateArchived = storage.StateArchived
 	StateDeleted  = storage.StateDeleted
 )

@@ -18,7 +18,7 @@ type AddRequest struct {
 	SessionID  string
 	AgentID    string
 	Source     string
-	SchemaID   string // Optional: custom extraction schema ID
+	SchemaID   string                   // Optional: custom extraction schema ID
 	TeamID     string                   // Team this memory belongs to
 	Visibility storage.MemoryVisibility // Visibility level (defaults based on team membership)
 	CreatedAt  time.Time                // Optional: override created_at timestamp (for simulation/migration)
@@ -29,6 +29,7 @@ type AddResult struct {
 	MemoriesCreated     int
 	MemoriesUpdated     int
 	MemoriesDeleted     int
+	MemoriesResolved    int
 	Skipped             int
 	Details             []MemoryDetail
 	CustomExtractionID  string         // ID of custom extraction if schema was used
@@ -42,7 +43,7 @@ type MemoryDetail struct {
 	Type       storage.MemoryType
 	Importance float64
 	Confidence float64
-	Action     string // "created", "updated", "deleted", "skipped"
+	Action     string // "created", "updated", "deleted", "resolved", "skipped"
 	Reason     string
 }
 
@@ -172,6 +173,18 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 		result.Details = append(result.Details, detail)
 		if detail.Action == "deleted" {
 			result.MemoriesDeleted++
+		}
+	}
+
+	// Process resolves
+	for _, res := range extractResp.Resolves {
+		detail, err := e.processResolve(ctx, res, similarMemories, entityID, simOpts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process resolve: %w", err)
+		}
+		result.Details = append(result.Details, detail)
+		if detail.Action == "resolved" {
+			result.MemoriesResolved++
 		}
 	}
 
@@ -425,7 +438,6 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 // processUpdate handles an LLM-suggested update to an existing memory.
 func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) (MemoryDetail, error) {
 	targetMemory := e.findTargetMemory(ctx, update.Query, similar, entityID, opts)
-
 	if targetMemory == nil {
 		return MemoryDetail{
 			Content: update.Query,
@@ -478,7 +490,6 @@ func (e *Engine) processUpdate(ctx context.Context, update llm.MemoryUpdate, sim
 // processDelete handles an LLM-suggested deletion.
 func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) (MemoryDetail, error) {
 	targetMemory := e.findTargetMemory(ctx, del.Query, similar, entityID, opts)
-
 	if targetMemory == nil {
 		return MemoryDetail{
 			Content: del.Query,
@@ -511,6 +522,44 @@ func (e *Engine) processDelete(ctx context.Context, del llm.MemoryDelete, simila
 		Type:    targetMemory.Type,
 		Action:  "deleted",
 		Reason:  del.Reason,
+	}, nil
+}
+
+// processResolve handles an LLM-suggested resolution of an existing memory.
+func (e *Engine) processResolve(ctx context.Context, res llm.MemoryResolve, similar []*storage.SimilarityResult, entityID string, opts storage.SimilarityOptions) (MemoryDetail, error) {
+	targetMemory := e.findTargetMemory(ctx, res.Query, similar, entityID, opts)
+	if targetMemory == nil {
+		return MemoryDetail{
+			Content: res.Query,
+			Action:  "skipped",
+			Reason:  "no matching memory found for resolve",
+		}, nil
+	}
+
+	if err := e.store.ResolveMemory(ctx, targetMemory.ID); err != nil {
+		return MemoryDetail{}, err
+	}
+
+	e.emit("memory.resolved", entityID, targetMemory.AgentID, targetMemory.TeamID, map[string]any{
+		"memory":  targetMemory,
+		"content": targetMemory.Content,
+		"reason":  res.Reason,
+	})
+
+	//nolint:errcheck // fire-and-forget logging
+	e.store.LogHistory(ctx, &storage.HistoryEntry{
+		MemoryID:  targetMemory.ID,
+		Operation: "resolve",
+		Changes:   map[string]any{"content": targetMemory.Content},
+		Reason:    res.Reason,
+	})
+
+	return MemoryDetail{
+		ID:      targetMemory.ID,
+		Content: targetMemory.Content,
+		Type:    targetMemory.Type,
+		Action:  "resolved",
+		Reason:  res.Reason,
 	}, nil
 }
 

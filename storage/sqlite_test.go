@@ -186,6 +186,44 @@ func TestSQLiteStore_DeleteMemory_Hard(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ResolveMemory_KeepsSearchable(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mem := testMemory("user-1")
+	mem.Hash = "resolve-hash"
+	mem.Embedding = testEncodeEmbedding([]float32{1, 0, 0})
+	if err := s.CreateMemory(ctx, mem); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ResolveMemory(ctx, mem.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetMemory(ctx, mem.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateResolved {
+		t.Errorf("State = %q, want %q", got.State, StateResolved)
+	}
+
+	results, err := s.FindSimilar(ctx, []float32{1, 0, 0}, "user-1", 10, 0.0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("FindSimilar returned %d results, want 1", len(results))
+	}
+	if results[0].Memory.ID != mem.ID {
+		t.Errorf("result ID = %q, want %q", results[0].Memory.ID, mem.ID)
+	}
+	if results[0].Memory.State != StateResolved {
+		t.Errorf("result state = %q, want %q", results[0].Memory.State, StateResolved)
+	}
+}
+
 // --- Vector Search ---
 
 func TestSQLiteStore_FindSimilar(t *testing.T) {

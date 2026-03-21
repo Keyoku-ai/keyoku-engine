@@ -15,7 +15,7 @@ import (
 // Returns counts for rebuilt and skipped vectors.
 func (s *SQLiteStore) rebuildIndex(index *vectorindex.HNSW) (rebuilt int, skipped int, err error) {
 	rows, err := s.db.Query(
-		`SELECT id, embedding FROM memories WHERE state IN ('active', 'stale') AND embedding IS NOT NULL`)
+		`SELECT id, embedding FROM memories WHERE state IN ('active', 'stale', 'resolved') AND embedding IS NOT NULL`)
 	if err != nil {
 		return 0, 0, err
 	}
