@@ -63,6 +63,9 @@ type HeartbeatResult struct {
 	// Team heartbeat fields (populated only in team heartbeat mode)
 	ByAgent map[string]*AgentHeartbeatSummary // per-agent breakdown (team mode only)
 
+	// v4: Enhanced LLM analysis (populated by runEnhancedLLMAnalysis)
+	EnhancedAnalysis *llm.HeartbeatAnalysisResponse `json:"enhanced_analysis,omitempty"`
+
 	// Internal: unfiltered goal progress for snapshot delta detection (includes no_activity)
 	allGoalProgress []GoalProgressItem `json:"-"`
 }

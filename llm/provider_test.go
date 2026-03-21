@@ -237,6 +237,53 @@ func TestFormatStateExtractionPrompt_Defaults(t *testing.T) {
 	}
 }
 
+func TestFormatHeartbeatAnalysisPrompt_WithConversationHistory(t *testing.T) {
+	prompt := FormatHeartbeatAnalysisPrompt(HeartbeatAnalysisRequest{
+		ActivitySummary:  "PR #42 merged, deployment pending",
+		RelevantMemories: []string{"[importance:0.9] PR #42 needs code review"},
+		ConversationHistory: []string{
+			"[Mar 21 10:00] user: How is PR #42 going?",
+			"[Mar 21 10:01] assistant: PR #42 has been merged",
+		},
+		Autonomy:    "suggest",
+		EntityID:    "user-1",
+		PendingWork: []string{"Deploy v2.1 to staging"},
+		SignalCount: 1,
+	})
+
+	if !strings.Contains(prompt, "PR #42") {
+		t.Error("prompt should contain conversation about PR #42")
+	}
+	if !strings.Contains(prompt, "Recent Conversation History") {
+		t.Error("prompt should contain conversation history section")
+	}
+	if !strings.Contains(prompt, "How is PR #42 going?") {
+		t.Error("prompt should include actual conversation messages")
+	}
+	if !strings.Contains(prompt, "suggest") {
+		t.Error("prompt should include autonomy level")
+	}
+	if !strings.Contains(prompt, "Deploy v2.1") {
+		t.Error("prompt should include pending work signals")
+	}
+}
+
+func TestFormatHeartbeatAnalysisPrompt_NoConversation(t *testing.T) {
+	prompt := FormatHeartbeatAnalysisPrompt(HeartbeatAnalysisRequest{
+		ActivitySummary: "Some signals detected",
+		Autonomy:        "observe",
+		EntityID:        "user-1",
+	})
+
+	if !strings.Contains(prompt, "observe") {
+		t.Error("prompt should include autonomy level")
+	}
+	// Should still generate a valid prompt without conversation history
+	if prompt == "" {
+		t.Error("prompt should not be empty")
+	}
+}
+
 // --- Integration tests (require API keys, make real API calls) ---
 
 // geminiCtx returns a context with a 60-second timeout for Gemini API calls.

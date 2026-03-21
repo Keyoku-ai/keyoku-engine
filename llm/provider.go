@@ -476,6 +476,9 @@ const heartbeatAnalysisPrompt = `You are an AI agent's memory and planning syste
 ### Recent Heartbeat Messages (DO NOT repeat these)
 %s
 
+### Recent Conversation History (DO NOT re-surface topics already discussed here)
+%s
+
 ## Instructions
 Cross-reference the agent's current activity with ALL signals. You are a fully autonomous personal assistant — think holistically:
 
@@ -490,7 +493,8 @@ Cross-reference the agent's current activity with ALL signals. You are a fully a
 9. **Time of Day**: Adjust tone and verbosity. Morning = energetic, evening = brief, late_night/quiet = only if truly urgent.
 10. **Escalation**: If escalation level > 1, you've mentioned this before. Level 2 = be more direct. Level 3 = offer specific help. Level 4+ = drop it unless urgent.
 11. **Dedup**: NEVER repeat or paraphrase recent heartbeat messages. Say something new or say nothing.
-12. **Signal Urgency Tier**: The system has already computed a signal urgency tier based on the types of active signals. Use this as a FLOOR for your urgency rating. If the tier is "immediate", urgency should be "high" or "critical". If "elevated", at least "medium". If "normal", at least "low". You may go higher than the floor based on context, but never lower.
+12. **Conversation Suppression**: Check the conversation history. If a topic was already discussed (user said they resolved it, handled it, or it was addressed), do NOT re-surface it. The conversation is the ground truth for what's already been dealt with.
+13. **Signal Urgency Tier**: The system has already computed a signal urgency tier based on the types of active signals. Use this as a FLOOR for your urgency rating. If the tier is "immediate", urgency should be "high" or "critical". If "elevated", at least "medium". If "normal", at least "low". You may go higher than the floor based on context, but never lower.
 
 Tailor your response to the autonomy level:
 - observe: action_brief = observations, user_facing = "FYI: ..." informational notes
@@ -569,6 +573,7 @@ func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
 			return fmt.Sprintf("%s (%d active signals) — use this as the MINIMUM urgency floor", req.SignalUrgencyTier, req.SignalCount)
 		}(),
 		formatList(req.RecentMessages),
+		formatList(req.ConversationHistory),
 	)
 }
 

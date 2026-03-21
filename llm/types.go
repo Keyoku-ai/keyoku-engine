@@ -182,6 +182,9 @@ type HeartbeatAnalysisRequest struct {
 	// Signal tier analysis (computed from signal checks, informs urgency)
 	SignalUrgencyTier string `json:"signal_urgency_tier,omitempty"` // "immediate", "elevated", "normal", "low", "confluence"
 	SignalCount       int    `json:"signal_count,omitempty"`        // Total number of active signals
+
+	// v4: Conversation context for topic suppression
+	ConversationHistory []string `json:"conversation_history,omitempty"` // Recent user/agent conversation messages (for suppressing already-discussed topics)
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	keyoku "github.com/keyoku-ai/keyoku-engine"
+	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
 // HandleRemember extracts and stores memories from content.
@@ -281,6 +282,66 @@ func (h *Handlers) HandleConsolidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// HandleUpdateMemory applies a partial update to a memory.
+func (h *Handlers) HandleUpdateMemory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" || !validID.MatchString(id) {
+		writeError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	var req struct {
+		Content    *string  `json:"content,omitempty"`
+		Importance *float64 `json:"importance,omitempty"`
+		State      *string  `json:"state,omitempty"`
+		Tags       *[]string `json:"tags,omitempty"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	var updates storage.MemoryUpdate
+	if req.Content != nil {
+		updates.Content = req.Content
+	}
+	if req.Importance != nil {
+		updates.Importance = req.Importance
+	}
+	if req.State != nil {
+		state := storage.MemoryState(*req.State)
+		updates.State = &state
+	}
+	if req.Tags != nil {
+		updates.Tags = req.Tags
+	}
+
+	mem, err := h.k.UpdateMemory(r.Context(), id, updates)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toMemoryJSON(mem))
+}
+
+// HandleResolveMemory marks a memory as resolved and drops its importance.
+func (h *Handlers) HandleResolveMemory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" || !validID.MatchString(id) {
+		writeError(w, http.StatusBadRequest, "invalid memory id")
+		return
+	}
+
+	mem, err := h.k.ResolveMemory(r.Context(), id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toMemoryJSON(mem))
 }
 
 // HandleUpdateTags updates the tags on a memory.

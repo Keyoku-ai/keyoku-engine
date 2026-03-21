@@ -1090,6 +1090,21 @@ func (k *Keyoku) UpdateTags(ctx context.Context, memoryID string, tags []string)
 	return err
 }
 
+// UpdateMemory applies a partial update to a memory by ID.
+func (k *Keyoku) UpdateMemory(ctx context.Context, memoryID string, updates storage.MemoryUpdate) (*Memory, error) {
+	return k.store.UpdateMemory(ctx, memoryID, updates)
+}
+
+// ResolveMemory marks a memory as resolved and drops its importance.
+func (k *Keyoku) ResolveMemory(ctx context.Context, memoryID string) (*Memory, error) {
+	resolved := storage.StateResolved
+	low := 0.1
+	return k.store.UpdateMemory(ctx, memoryID, storage.MemoryUpdate{
+		State:      &resolved,
+		Importance: &low,
+	})
+}
+
 // --- schedule helpers ---
 
 // isScheduleContentMatch checks if two schedule content strings refer to the same task.

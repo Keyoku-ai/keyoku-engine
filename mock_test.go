@@ -7,8 +7,61 @@ import (
 	"context"
 	"time"
 
+	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
+
+// testLLMProvider implements llm.Provider for root package tests.
+type testLLMProvider struct {
+	analyzeHeartbeatFn func(context.Context, llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error)
+	prioritizeActionsFn func(context.Context, llm.ActionPriorityRequest) (*llm.ActionPriorityResponse, error)
+}
+
+func (p *testLLMProvider) ExtractMemories(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+	return &llm.ExtractionResponse{}, nil
+}
+func (p *testLLMProvider) ConsolidateMemories(_ context.Context, _ llm.ConsolidationRequest) (*llm.ConsolidationResponse, error) {
+	return &llm.ConsolidationResponse{}, nil
+}
+func (p *testLLMProvider) ExtractWithSchema(_ context.Context, _ llm.CustomExtractionRequest) (*llm.CustomExtractionResponse, error) {
+	return &llm.CustomExtractionResponse{}, nil
+}
+func (p *testLLMProvider) ExtractState(_ context.Context, _ llm.StateExtractionRequest) (*llm.StateExtractionResponse, error) {
+	return &llm.StateExtractionResponse{}, nil
+}
+func (p *testLLMProvider) DetectConflict(_ context.Context, _ llm.ConflictCheckRequest) (*llm.ConflictCheckResponse, error) {
+	return &llm.ConflictCheckResponse{}, nil
+}
+func (p *testLLMProvider) ReEvaluateImportance(_ context.Context, _ llm.ImportanceReEvalRequest) (*llm.ImportanceReEvalResponse, error) {
+	return &llm.ImportanceReEvalResponse{}, nil
+}
+func (p *testLLMProvider) PrioritizeActions(ctx context.Context, req llm.ActionPriorityRequest) (*llm.ActionPriorityResponse, error) {
+	if p.prioritizeActionsFn != nil {
+		return p.prioritizeActionsFn(ctx, req)
+	}
+	return &llm.ActionPriorityResponse{}, nil
+}
+func (p *testLLMProvider) AnalyzeHeartbeatContext(ctx context.Context, req llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+	if p.analyzeHeartbeatFn != nil {
+		return p.analyzeHeartbeatFn(ctx, req)
+	}
+	return &llm.HeartbeatAnalysisResponse{}, nil
+}
+func (p *testLLMProvider) SummarizeGraph(_ context.Context, _ llm.GraphSummaryRequest) (*llm.GraphSummaryResponse, error) {
+	return &llm.GraphSummaryResponse{}, nil
+}
+func (p *testLLMProvider) RerankMemories(_ context.Context, _ llm.RerankRequest) (*llm.RerankResponse, error) {
+	return &llm.RerankResponse{}, nil
+}
+func (p *testLLMProvider) ExtractMemoriesCore(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+	return &llm.ExtractionResponse{}, nil
+}
+func (p *testLLMProvider) ExtractGraph(_ context.Context, _ llm.ExtractionRequest) (*llm.GraphExtractionResponse, error) {
+	return &llm.GraphExtractionResponse{}, nil
+}
+func (p *testLLMProvider) IsLite() bool    { return false }
+func (p *testLLMProvider) Name() string    { return "test" }
+func (p *testLLMProvider) Model() string   { return "test-model" }
 
 // testStore implements storage.Store for root package tests.
 // Uses the same fn field delegation pattern as engine/jobs mocks.
