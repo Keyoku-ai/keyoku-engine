@@ -847,31 +847,6 @@ func tierToUrgency(tier string) string {
 	}
 }
 
-// runLLMPrioritization runs the opt-in LLM prioritization on heartbeat results.
-func (k *Keyoku) runLLMPrioritization(ctx context.Context, cfg *heartbeatConfig, result *HeartbeatResult) {
-	// Always set a baseline urgency from the signal tier analysis
-	if result.Urgency == "" {
-		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
-	}
-
-	if cfg.llmProvider == nil || result.Summary == "" {
-		return
-	}
-	priorityResp, err := cfg.llmProvider.PrioritizeActions(ctx, llm.ActionPriorityRequest{
-		Summary:       result.Summary,
-		AgentContext:  cfg.agentContext,
-		EntityContext: cfg.entityContext,
-	})
-	if err == nil && priorityResp != nil {
-		result.PriorityAction = priorityResp.PriorityAction
-		result.ActionItems = priorityResp.ActionItems
-		// Map LLM urgency to canonical enum; keep tier-based fallback if mapping fails
-		if mapped := mapPriorityUrgency(priorityResp.Urgency); mapped != "" {
-			result.Urgency = mapped
-		}
-	}
-}
-
 // runEnhancedLLMAnalysis gathers conversation context and runs the full
 // AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
 // topics already discussed in conversation. Falls back to basic prioritization
