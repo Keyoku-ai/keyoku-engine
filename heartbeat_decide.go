@@ -933,7 +933,20 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 	result.PriorityAction = resp.ActionBrief
 	result.ActionItems = resp.RecommendedActions
 	result.EnhancedAnalysis = resp
-	if mapped := mapPriorityUrgency(resp.Urgency); mapped != "" {
+
+	// Normalize LLM urgency (canonical: none/low/medium/high/critical)
+	// to the legacy values expected by mapPriorityUrgency (e.g., immediate/soon/can_wait).
+	normalizedUrgency := strings.TrimSpace(strings.ToLower(resp.Urgency))
+	switch normalizedUrgency {
+	case "none", "low":
+		normalizedUrgency = "can_wait"
+	case "medium":
+		normalizedUrgency = "soon"
+	case "high", "critical":
+		normalizedUrgency = "immediate"
+	}
+
+	if mapped := mapPriorityUrgency(normalizedUrgency); mapped != "" {
 		result.Urgency = mapped
 	}
 
