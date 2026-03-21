@@ -117,26 +117,26 @@ type conflictJSON struct {
 // Combined heartbeat + context search in a single call.
 type heartbeatContextRequest struct {
 	EntityID        string  `json:"entity_id"`
-	Query           string  `json:"query,omitempty"`             // Current conversation context for memory search
-	TopK            int     `json:"top_k,omitempty"`             // Max relevant memories to return (default: 5)
-	MinScore        float64 `json:"min_score,omitempty"`         // Min similarity for context search (default: 0.1)
-	DeadlineWindow  string  `json:"deadline_window,omitempty"`   // How far ahead to look (default: 24h)
-	MaxResults      int     `json:"max_results,omitempty"`       // Max signals per category (default: 10)
+	Query           string  `json:"query,omitempty"`           // Current conversation context for memory search
+	TopK            int     `json:"top_k,omitempty"`           // Max relevant memories to return (default: 5)
+	MinScore        float64 `json:"min_score,omitempty"`       // Min similarity for context search (default: 0.1)
+	DeadlineWindow  string  `json:"deadline_window,omitempty"` // How far ahead to look (default: 24h)
+	MaxResults      int     `json:"max_results,omitempty"`     // Max signals per category (default: 10)
 	AgentID         string  `json:"agent_id,omitempty"`
 	TeamID          string  `json:"team_id,omitempty"`
-	Analyze         bool    `json:"analyze,omitempty"`           // Request LLM analysis of context
-	ActivitySummary string  `json:"activity_summary,omitempty"`  // Current conversation activity for LLM context
-	Autonomy        string  `json:"autonomy,omitempty"`          // "observe", "suggest", "act" (default: "suggest")
+	Analyze         bool    `json:"analyze,omitempty"`          // Request LLM analysis of context
+	ActivitySummary string  `json:"activity_summary,omitempty"` // Current conversation activity for LLM context
+	Autonomy        string  `json:"autonomy,omitempty"`         // "observe", "suggest", "act" (default: "suggest")
 
 	// Conversation awareness
 	InConversation bool `json:"in_conversation,omitempty"` // Plugin signals user is actively talking
 
 	// Optional parameter overrides (defaults come from autonomy level)
-	NudgeAfterSilence    string `json:"nudge_after_silence,omitempty"`      // e.g. "4h"
+	NudgeAfterSilence    string `json:"nudge_after_silence,omitempty"` // e.g. "4h"
 	MaxNudgesPerDay      int    `json:"max_nudges_per_day,omitempty"`
-	NudgeMaxInterval     string `json:"nudge_max_interval,omitempty"`       // e.g. "48h" — cap for backoff decay
-	SignalCooldownNormal string `json:"signal_cooldown_normal,omitempty"`   // e.g. "2h"
-	SignalCooldownLow    string `json:"signal_cooldown_low,omitempty"`      // e.g. "4h"
+	NudgeMaxInterval     string `json:"nudge_max_interval,omitempty"`     // e.g. "48h" — cap for backoff decay
+	SignalCooldownNormal string `json:"signal_cooldown_normal,omitempty"` // e.g. "2h"
+	SignalCooldownLow    string `json:"signal_cooldown_low,omitempty"`    // e.g. "4h"
 
 	// Virtual time override for demo recording
 	VirtualNow string `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
@@ -219,15 +219,15 @@ type heartbeatContextResponse struct {
 	GoalProgress       []goalProgressJSON      `json:"goal_progress,omitempty"`
 	Continuity         *continuityJSON         `json:"continuity,omitempty"`
 	SentimentTrend     *sentimentTrendJSON     `json:"sentiment_trend,omitempty"`
-	RelationshipAlerts []relationshipAlertJSON  `json:"relationship_alerts,omitempty"`
+	RelationshipAlerts []relationshipAlertJSON `json:"relationship_alerts,omitempty"`
 	KnowledgeGaps      []knowledgeGapJSON      `json:"knowledge_gaps,omitempty"`
-	BehavioralPatterns []behavioralPatternJSON  `json:"behavioral_patterns,omitempty"`
+	BehavioralPatterns []behavioralPatternJSON `json:"behavioral_patterns,omitempty"`
 
 	// Conversation state
 	InConversation bool `json:"in_conversation,omitempty"`
 
 	// Time and escalation awareness
-	TimePeriod      string `json:"time_period,omitempty"`       // "morning", "working", "evening", "late_night", "quiet"
+	TimePeriod      string `json:"time_period,omitempty"`      // "morning", "working", "evening", "late_night", "quiet"
 	EscalationLevel int    `json:"escalation_level,omitempty"` // 1=casual, 2=direct, 3=offer help, 4+=dropped
 
 	// v2: Intelligence metadata
@@ -337,7 +337,7 @@ func writeInternalErrorWithContext(w http.ResponseWriter, context string, err er
 	}
 
 	errStr := err.Error()
-	if strings.Contains(errStr, "HNSW") || strings.Contains(errStr, "similarity search failed") {
+	if strings.Contains(errStr, "HNSW") {
 		writeErrorCode(w, http.StatusServiceUnavailable, "vector index unavailable", "vector_index_unavailable", true)
 		return
 	}
