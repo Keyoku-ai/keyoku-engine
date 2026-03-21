@@ -375,9 +375,9 @@ func (s *SQLiteStore) migrate() error {
 	}
 
 	// Migrate CHECK constraint on state column to include 'resolved'.
-	// SQLite doesn't support ALTER COLUMN, so we check if the constraint
-	// already allows 'resolved' by attempting a probe insert+rollback.
-	// If it fails, we rebuild the table with the updated constraint.
+	// SQLite doesn't support ALTER COLUMN, so we inspect the CHECK
+	// constraint definition in sqlite_master to see if it already allows
+	// 'resolved'; if not, we rebuild the table with the updated constraint.
 	s.migrateStateConstraint()
 
 	return nil
