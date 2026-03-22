@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,6 +76,38 @@ func (p *testHeartbeatLLMProvider) ExtractGraph(_ context.Context, _ llm.Extract
 func (p *testHeartbeatLLMProvider) IsLite() bool  { return false }
 func (p *testHeartbeatLLMProvider) Name() string  { return "test" }
 func (p *testHeartbeatLLMProvider) Model() string { return "test-model" }
+
+func seedHeartbeatAnalysisMemories(t *testing.T, store *storage.SQLiteStore, entityID string) {
+	t.Helper()
+
+	for i := 0; i < 4; i++ {
+		if err := store.CreateMemory(context.Background(), &storage.Memory{
+			ID:         fmt.Sprintf("ctx-%d", i+1),
+			EntityID:   entityID,
+			Content:    fmt.Sprintf("Context memory %d", i+1),
+			Type:       storage.TypeContext,
+			State:      storage.StateActive,
+			Importance: 0.4,
+			Confidence: 0.9,
+			Stability:  60,
+		}); err != nil {
+			t.Fatalf("failed to seed context memory %d: %v", i+1, err)
+		}
+	}
+
+	if err := store.CreateMemory(context.Background(), &storage.Memory{
+		ID:         "plan-1",
+		EntityID:   entityID,
+		Content:    "Ship release",
+		Type:       storage.TypePlan,
+		State:      storage.StateActive,
+		Importance: 0.9,
+		Confidence: 0.9,
+		Stability:  60,
+	}); err != nil {
+		t.Fatalf("failed to seed plan memory: %v", err)
+	}
+}
 
 // --- HandleHeartbeatCheck ---
 
@@ -182,18 +215,7 @@ func TestHandleHeartbeatContext_DeveloperTraceVerbosity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h, store := newTestHandlersWithStore(t)
-			if err := store.CreateMemory(context.Background(), &storage.Memory{
-				ID:         "plan-1",
-				EntityID:   "user-1",
-				Content:    "Ship release",
-				Type:       storage.TypePlan,
-				State:      storage.StateActive,
-				Importance: 0.9,
-				Confidence: 0.9,
-				Stability:  60,
-			}); err != nil {
-				t.Fatalf("failed to seed plan memory: %v", err)
-			}
+			seedHeartbeatAnalysisMemories(t, store, "user-1")
 
 			h.k.SetProvider(&testHeartbeatLLMProvider{
 				analyzeHeartbeatFn: func(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
@@ -247,18 +269,7 @@ func TestHandleHeartbeatContext_DeveloperTraceVerbosity(t *testing.T) {
 
 func TestHandleHeartbeatContext_UsesActualSignalCount(t *testing.T) {
 	h, store := newTestHandlersWithStore(t)
-	if err := store.CreateMemory(context.Background(), &storage.Memory{
-		ID:         "plan-1",
-		EntityID:   "user-1",
-		Content:    "Ship release",
-		Type:       storage.TypePlan,
-		State:      storage.StateActive,
-		Importance: 0.9,
-		Confidence: 0.9,
-		Stability:  60,
-	}); err != nil {
-		t.Fatalf("failed to seed plan memory: %v", err)
-	}
+	seedHeartbeatAnalysisMemories(t, store, "user-1")
 
 	var capturedReq llm.HeartbeatAnalysisRequest
 	h.k.SetProvider(&testHeartbeatLLMProvider{
@@ -283,6 +294,16 @@ func TestHandleHeartbeatContext_UsesActualSignalCount(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	var resp heartbeatContextResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !resp.ShouldAct {
+		t.Fatal("expected should_act to remain true")
+	}
+	if resp.Analysis == nil {
+		t.Fatal("expected analysis in response")
 	}
 	if capturedReq.SignalCount != 1 {
 		t.Fatalf("SignalCount = %d, want 1 active signal", capturedReq.SignalCount)

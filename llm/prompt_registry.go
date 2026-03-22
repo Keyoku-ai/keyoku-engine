@@ -6,6 +6,7 @@ package llm
 import (
 	"embed"
 	"fmt"
+	"path"
 	"strings"
 	"text/template"
 	"time"
@@ -18,11 +19,11 @@ var heartbeatTemplates map[HeartbeatVerbosity]*template.Template
 
 func init() {
 	funcs := template.FuncMap{
-		"formatList":      tmplFormatList,
-		"default":         tmplDefault,
-		"weekday":         tmplWeekday,
-		"formatEscalation": tmplFormatEscalation,
-		"formatVelocity":  tmplFormatVelocity,
+		"formatList":        tmplFormatList,
+		"default":           tmplDefault,
+		"weekday":           tmplWeekday,
+		"formatEscalation":  tmplFormatEscalation,
+		"formatVelocity":    tmplFormatVelocity,
 		"formatUrgencyTier": tmplFormatUrgencyTier,
 	}
 
@@ -34,7 +35,7 @@ func init() {
 	for _, level := range levels {
 		filename := "prompts/heartbeat_" + string(level) + ".tmpl"
 		t := template.Must(
-			template.New(filename).Funcs(funcs).ParseFS(promptFS, filename),
+			template.New(path.Base(filename)).Funcs(funcs).ParseFS(promptFS, filename),
 		)
 		heartbeatTemplates[level] = t
 	}
