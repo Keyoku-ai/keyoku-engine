@@ -239,8 +239,9 @@ func (h *Handlers) HandleSampleMemories(w http.ResponseWriter, r *http.Request) 
 // HandleHealth returns server health status.
 func (h *Handlers) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":    "ok",
-		"timestamp": time.Now().Format(time.RFC3339),
+		"status":      "ok",
+		"version":     version,
+		"timestamp":   time.Now().Format(time.RFC3339),
 		"sse_clients": h.hub.ClientCount(),
 	})
 }

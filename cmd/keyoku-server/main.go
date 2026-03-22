@@ -21,6 +21,9 @@ import (
 	keyoku "github.com/keyoku-ai/keyoku-engine"
 )
 
+// version is set at build time via -ldflags "-X main.version=..."
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "path to config JSON file")
 	port := flag.Int("port", 0, "override port (default: 18900)")
