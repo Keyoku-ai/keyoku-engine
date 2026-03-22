@@ -209,6 +209,17 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id string, hard bool) er
 	return err
 }
 
+func (s *SQLiteStore) ResolveMemory(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE memories SET state = ?, updated_at = ? WHERE id = ?",
+		string(StateResolved), now, id)
+	return err
+}
+
 // --- Deduplication ---
 
 func (s *SQLiteStore) FindByHash(ctx context.Context, entityID, hash string) (*Memory, error) {

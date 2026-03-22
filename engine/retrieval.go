@@ -24,7 +24,7 @@ type EnhancedRetriever struct {
 type RetrievalConfig struct {
 	MaxResults         int
 	MinSimilarity      float64
-	RecencyBoostWindow int     // hours
+	RecencyBoostWindow int // hours
 	RecencyBoostFactor float64
 	ImportanceWeight   float64
 	SimilarityWeight   float64
@@ -231,7 +231,7 @@ func (r *EnhancedRetriever) Retrieve(ctx context.Context, req RetrievalRequest) 
 func (r *EnhancedRetriever) RetrieveByType(ctx context.Context, entityID string, limit int) ([]*storage.Memory, error) {
 	return r.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
-		States:     []storage.MemoryState{storage.StateActive},
+		States:     []storage.MemoryState{storage.StateActive, storage.StateResolved},
 		Limit:      limit,
 		OrderBy:    "importance",
 		Descending: true,
@@ -247,7 +247,7 @@ func (r *EnhancedRetriever) RetrieveRecent(ctx context.Context, entityID string,
 func (r *EnhancedRetriever) RetrieveImportant(ctx context.Context, entityID string, limit int) ([]*storage.Memory, error) {
 	return r.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
-		States:     []storage.MemoryState{storage.StateActive},
+		States:     []storage.MemoryState{storage.StateActive, storage.StateResolved},
 		Limit:      limit,
 		OrderBy:    "importance",
 		Descending: true,
@@ -286,7 +286,7 @@ func (r *EnhancedRetriever) applyFilters(memories []*ScoredMemory, req Retrieval
 			if !found {
 				continue
 			}
-		} else if !req.IncludeDecayed && m.Memory.State != storage.StateActive {
+		} else if !req.IncludeDecayed && m.Memory.State != storage.StateActive && m.Memory.State != storage.StateResolved {
 			continue
 		}
 

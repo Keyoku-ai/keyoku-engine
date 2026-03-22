@@ -13,14 +13,14 @@ import (
 
 // QueryRequest represents a memory query request.
 type QueryRequest struct {
-	Query     string
-	Limit     int
-	Mode      ScorerMode
-	AgentID   string
-	TeamAware bool    // When true, resolve team and apply visibility filtering
-	TeamID    string  // Team ID for visibility resolution
-	MinScore       float64 // Minimum similarity threshold (0 = use default)
-	EnableLLMRerank bool   // When true, use LLM to re-rank HNSW results for better accuracy
+	Query           string
+	Limit           int
+	Mode            ScorerMode
+	AgentID         string
+	TeamAware       bool    // When true, resolve team and apply visibility filtering
+	TeamID          string  // Team ID for visibility resolution
+	MinScore        float64 // Minimum similarity threshold (0 = use default)
+	EnableLLMRerank bool    // When true, use LLM to re-rank HNSW results for better accuracy
 }
 
 // QueryResult represents a single query result.
@@ -207,7 +207,7 @@ func (e *Engine) GetAll(ctx context.Context, entityID string, limit int) ([]*sto
 	}
 	return e.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID:   entityID,
-		States:     []storage.MemoryState{storage.StateActive, storage.StateStale},
+		States:     []storage.MemoryState{storage.StateActive, storage.StateStale, storage.StateResolved},
 		Limit:      limit,
 		OrderBy:    "created_at",
 		Descending: true,

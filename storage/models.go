@@ -72,9 +72,9 @@ type MemoryState string
 const (
 	StateActive   MemoryState = "active"
 	StateStale    MemoryState = "stale"
+	StateResolved MemoryState = "resolved"
 	StateArchived MemoryState = "archived"
 	StateDeleted  MemoryState = "deleted"
-	StateResolved MemoryState = "resolved"
 )
 
 // MemoryType represents the type of memory with associated stability.
@@ -144,18 +144,18 @@ func (t MemoryType) IsValid() bool {
 
 // Memory represents a stored memory.
 type Memory struct {
-	ID        string     `db:"id"`
-	EntityID  string     `db:"entity_id"`
-	AgentID   string     `db:"agent_id"`
-	TeamID    string     `db:"team_id"`
-	Content   string     `db:"content"`
-	Hash      string     `db:"content_hash"`
-	Embedding []byte     `db:"embedding"` // BLOB backup for HNSW recovery
+	ID        string `db:"id"`
+	EntityID  string `db:"entity_id"`
+	AgentID   string `db:"agent_id"`
+	TeamID    string `db:"team_id"`
+	Content   string `db:"content"`
+	Hash      string `db:"content_hash"`
+	Embedding []byte `db:"embedding"` // BLOB backup for HNSW recovery
 
 	Visibility MemoryVisibility `db:"visibility"`
 
-	Type       MemoryType  `db:"memory_type"`
-	Tags       StringSlice `db:"tags"`
+	Type MemoryType  `db:"memory_type"`
+	Tags StringSlice `db:"tags"`
 
 	Importance float64 `db:"importance"`
 	Confidence float64 `db:"confidence"`
@@ -185,11 +185,11 @@ type Memory struct {
 
 // HistoryEntry represents an entry in the audit trail.
 type HistoryEntry struct {
-	ID        string  `db:"id"`
-	MemoryID  string  `db:"memory_id"`
-	Operation string  `db:"operation"`
-	Changes   JSONMap `db:"changes"`
-	Reason    string  `db:"reason"`
+	ID        string    `db:"id"`
+	MemoryID  string    `db:"memory_id"`
+	Operation string    `db:"operation"`
+	Changes   JSONMap   `db:"changes"`
+	Reason    string    `db:"reason"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
@@ -207,20 +207,20 @@ type SessionMessage struct {
 
 // MemoryQuery represents query parameters for searching memories.
 type MemoryQuery struct {
-	EntityID   string
-	AgentID    string
-	TeamID     string             // Filter to specific team
-	Visibility []MemoryVisibility // Filter by specific visibility levels
+	EntityID      string
+	AgentID       string
+	TeamID        string             // Filter to specific team
+	Visibility    []MemoryVisibility // Filter by specific visibility levels
 	VisibilityFor *VisibilityContext // Build visibility clause for an agent (private+team+global resolution)
-	Types      []MemoryType
-	Tags       []string // Exact tag match (all must be present)
-	TagPrefix  string   // Filter tags by prefix (e.g., "cron:" matches any cron-tagged memory)
-	States     []MemoryState
-	MinScore   float64
-	Limit      int
-	Offset     int
-	OrderBy    string
-	Descending bool
+	Types         []MemoryType
+	Tags          []string // Exact tag match (all must be present)
+	TagPrefix     string   // Filter tags by prefix (e.g., "cron:" matches any cron-tagged memory)
+	States        []MemoryState
+	MinScore      float64
+	Limit         int
+	Offset        int
+	OrderBy       string
+	Descending    bool
 	Cursor        string    // Memory ID for keyset/cursor pagination (used instead of Offset when set)
 	CreatedBefore time.Time // Only return memories created before this time (for virtual time simulation)
 }
@@ -301,23 +301,23 @@ type EntityMention struct {
 
 // Relationship represents a relationship between two entities.
 type Relationship struct {
-	ID               string     `db:"id"`
-	OwnerEntityID    string     `db:"owner_entity_id"`
-	AgentID          string     `db:"agent_id"`
-	TeamID           string     `db:"team_id"`
-	SourceEntityID   string     `db:"source_entity_id"`
-	TargetEntityID   string     `db:"target_entity_id"`
-	RelationshipType string     `db:"relationship_type"`
-	Description      string     `db:"description"`
-	Strength         float64    `db:"strength"`
-	Confidence       float64    `db:"confidence"`
-	IsBidirectional  bool       `db:"is_bidirectional"`
-	EvidenceCount    int        `db:"evidence_count"`
-	Attributes       JSONMap    `db:"attributes"`
-	FirstSeenAt      time.Time  `db:"first_seen_at"`
-	LastSeenAt       time.Time  `db:"last_seen_at"`
-	CreatedAt        time.Time  `db:"created_at"`
-	UpdatedAt        time.Time  `db:"updated_at"`
+	ID               string    `db:"id"`
+	OwnerEntityID    string    `db:"owner_entity_id"`
+	AgentID          string    `db:"agent_id"`
+	TeamID           string    `db:"team_id"`
+	SourceEntityID   string    `db:"source_entity_id"`
+	TargetEntityID   string    `db:"target_entity_id"`
+	RelationshipType string    `db:"relationship_type"`
+	Description      string    `db:"description"`
+	Strength         float64   `db:"strength"`
+	Confidence       float64   `db:"confidence"`
+	IsBidirectional  bool      `db:"is_bidirectional"`
+	EvidenceCount    int       `db:"evidence_count"`
+	Attributes       JSONMap   `db:"attributes"`
+	FirstSeenAt      time.Time `db:"first_seen_at"`
+	LastSeenAt       time.Time `db:"last_seen_at"`
+	CreatedAt        time.Time `db:"created_at"`
+	UpdatedAt        time.Time `db:"updated_at"`
 }
 
 // RelationshipEvidence links a relationship to a memory.
@@ -408,19 +408,19 @@ type HeartbeatAction struct {
 	EntityID          string    `db:"entity_id"`
 	AgentID           string    `db:"agent_id"`
 	ActedAt           time.Time `db:"acted_at"`
-	TriggerCategory   string    `db:"trigger_category"`    // "signal", "nudge", "cron", "deadline"
+	TriggerCategory   string    `db:"trigger_category"` // "signal", "nudge", "cron", "deadline"
 	SignalFingerprint string    `db:"signal_fingerprint"`
-	Decision          string    `db:"decision"`            // "act", "suppress_cooldown", "suppress_stale", "suppress_quiet"
+	Decision          string    `db:"decision"` // "act", "suppress_cooldown", "suppress_stale", "suppress_quiet"
 	UrgencyTier       string    `db:"urgency_tier"`
-	LLMShouldAct      *bool    `db:"llm_should_act"`
+	LLMShouldAct      *bool     `db:"llm_should_act"`
 	SignalSummary     string    `db:"signal_summary"`
 	TotalSignals      int       `db:"total_signals"`
 
 	// v2: Intelligence fields
-	UserResponded    *bool       `db:"user_responded"`      // nil=unchecked, true/false after 2h window
-	TopicEntities    StringSlice `db:"topic_entities"`      // JSON array of entity IDs from signals
-	StateSnapshot    string      `db:"state_snapshot"`      // JSON of state metrics at time of decision
-	SignalSummaryHash string     `db:"signal_summary_hash"` // SHA256 hash of signal summary text for content-based dedup
+	UserResponded     *bool       `db:"user_responded"`      // nil=unchecked, true/false after 2h window
+	TopicEntities     StringSlice `db:"topic_entities"`      // JSON array of entity IDs from signals
+	StateSnapshot     string      `db:"state_snapshot"`      // JSON of state metrics at time of decision
+	SignalSummaryHash string      `db:"signal_summary_hash"` // SHA256 hash of signal summary text for content-based dedup
 }
 
 // SurfacedMemory tracks when a specific memory was included in a heartbeat message.
@@ -435,15 +435,15 @@ type SurfacedMemory struct {
 // TopicSurfacing tracks how many times a topic has been mentioned in heartbeat messages.
 // Used for escalation: casual → direct → offer help → drop.
 type TopicSurfacing struct {
-	ID            string     `db:"id"`
-	EntityID      string     `db:"entity_id"`
-	AgentID       string     `db:"agent_id"`
-	TopicHash     string     `db:"topic_hash"`
-	TopicLabel    string     `db:"topic_label"`
-	TimesSurfaced int        `db:"times_surfaced"`
-	LastSurfacedAt time.Time `db:"last_surfaced_at"`
-	UserResponded bool       `db:"user_responded"`
-	DroppedAt     *time.Time `db:"dropped_at"`
+	ID             string     `db:"id"`
+	EntityID       string     `db:"entity_id"`
+	AgentID        string     `db:"agent_id"`
+	TopicHash      string     `db:"topic_hash"`
+	TopicLabel     string     `db:"topic_label"`
+	TimesSurfaced  int        `db:"times_surfaced"`
+	LastSurfacedAt time.Time  `db:"last_surfaced_at"`
+	UserResponded  bool       `db:"user_responded"`
+	DroppedAt      *time.Time `db:"dropped_at"`
 }
 
 // HeartbeatMessage stores the actual message text sent in a heartbeat.
@@ -459,15 +459,15 @@ type HeartbeatMessage struct {
 
 // AgentState represents a persistent state for an agent workflow.
 type AgentState struct {
-	ID              string         `db:"id"`
-	EntityID        string         `db:"entity_id"`
-	AgentID         string         `db:"agent_id"`
-	SchemaName      string         `db:"schema_name"`
-	CurrentState    map[string]any `db:"current_state"`
+	ID               string         `db:"id"`
+	EntityID         string         `db:"entity_id"`
+	AgentID          string         `db:"agent_id"`
+	SchemaName       string         `db:"schema_name"`
+	CurrentState     map[string]any `db:"current_state"`
 	SchemaDefinition map[string]any `db:"schema_definition"`
-	TransitionRules map[string]any `db:"transition_rules"`
-	LastUpdatedAt   *time.Time     `db:"last_updated_at"`
-	CreatedAt       time.Time      `db:"created_at"`
+	TransitionRules  map[string]any `db:"transition_rules"`
+	LastUpdatedAt    *time.Time     `db:"last_updated_at"`
+	CreatedAt        time.Time      `db:"created_at"`
 }
 
 // AgentStateHistory represents a state change event.

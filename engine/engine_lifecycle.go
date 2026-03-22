@@ -53,7 +53,7 @@ func (e *Engine) GetStats(ctx context.Context, entityID string) (*Stats, error) 
 	memories, err := e.store.QueryMemories(ctx, storage.MemoryQuery{
 		EntityID: entityID,
 		Limit:    10000,
-		States:   []storage.MemoryState{storage.StateActive, storage.StateStale, storage.StateArchived},
+		States:   []storage.MemoryState{storage.StateActive, storage.StateStale, storage.StateResolved, storage.StateArchived},
 	})
 	if err != nil {
 		return nil, err

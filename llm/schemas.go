@@ -86,6 +86,16 @@ var DeleteItemSchema = map[string]interface{}{
 	"required": []string{"query", "reason"},
 }
 
+// ResolveItemSchema is the schema for a suggested memory resolution.
+var ResolveItemSchema = map[string]interface{}{
+	"type": "object",
+	"properties": map[string]interface{}{
+		"query":  map[string]interface{}{"type": "string"},
+		"reason": map[string]interface{}{"type": "string"},
+	},
+	"required": []string{"query", "reason"},
+}
+
 // SkippedItemSchema is the schema for skipped content.
 var SkippedItemSchema = map[string]interface{}{
 	"type": "object",
@@ -108,7 +118,7 @@ var RankingItemSchema = map[string]interface{}{
 
 // --- Top-level schemas ---------------------------------------------------
 
-// ExtractionSchema is the full memory extraction schema (memories + entities + relationships + updates + deletes + skipped).
+// ExtractionSchema is the full memory extraction schema (memories + entities + relationships + updates + deletes + resolves + skipped).
 func ExtractionSchema() map[string]interface{} {
 	memItem := cloneSchema(MemoryItemSchema)
 	entItem := cloneSchema(EntityItemSchema)
@@ -120,6 +130,7 @@ func ExtractionSchema() map[string]interface{} {
 			"relationships": map[string]interface{}{"type": "array", "items": cloneSchema(RelationshipItemSchema)},
 			"updates":       map[string]interface{}{"type": "array", "items": cloneSchema(UpdateItemSchema)},
 			"deletes":       map[string]interface{}{"type": "array", "items": cloneSchema(DeleteItemSchema)},
+			"resolves":      map[string]interface{}{"type": "array", "items": cloneSchema(ResolveItemSchema)},
 			"skipped":       map[string]interface{}{"type": "array", "items": cloneSchema(SkippedItemSchema)},
 		},
 	}
@@ -135,6 +146,7 @@ func CoreExtractionSchema() map[string]interface{} {
 			"memories": map[string]interface{}{"type": "array", "items": memItem},
 			"updates":  map[string]interface{}{"type": "array", "items": cloneSchema(UpdateItemSchema)},
 			"deletes":  map[string]interface{}{"type": "array", "items": cloneSchema(DeleteItemSchema)},
+			"resolves": map[string]interface{}{"type": "array", "items": cloneSchema(ResolveItemSchema)},
 			"skipped":  map[string]interface{}{"type": "array", "items": cloneSchema(SkippedItemSchema)},
 		},
 	}
@@ -299,7 +311,7 @@ func ForOpenAIExtraction() map[string]interface{} {
 	// OpenAI needs all entity fields required
 	setRequired(s, "entities", []string{"canonical_name", "type", "aliases", "context"})
 	// Top-level required
-	s["required"] = []string{"memories", "entities", "relationships", "updates", "deletes", "skipped"}
+	s["required"] = []string{"memories", "entities", "relationships", "updates", "deletes", "resolves", "skipped"}
 	return ForOpenAI(s)
 }
 

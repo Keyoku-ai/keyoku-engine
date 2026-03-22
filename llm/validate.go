@@ -63,6 +63,9 @@ func validateResponse(resp *ExtractionResponse) error {
 	if resp.Deletes == nil {
 		resp.Deletes = []MemoryDelete{}
 	}
+	if resp.Resolves == nil {
+		resp.Resolves = []MemoryResolve{}
+	}
 	if resp.Skipped == nil {
 		resp.Skipped = []SkippedContent{}
 	}
@@ -109,6 +112,14 @@ func validateResponse(resp *ExtractionResponse) error {
 		}
 	}
 	resp.Deletes = validDeletes
+
+	validResolves := make([]MemoryResolve, 0, len(resp.Resolves))
+	for _, res := range resp.Resolves {
+		if res.Query != "" {
+			validResolves = append(validResolves, res)
+		}
+	}
+	resp.Resolves = validResolves
 
 	return nil
 }

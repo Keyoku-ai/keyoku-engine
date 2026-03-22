@@ -136,6 +136,78 @@ func TestEngine_Add_WithDeletes(t *testing.T) {
 	}
 }
 
+func TestEngine_Add_WithResolves(t *testing.T) {
+	existingMem := testMemory("existing-1", "User plans to finish the migration")
+	var resolvedID string
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingMem, Similarity: 0.8},
+			}, nil
+		},
+		resolveMemoryFn: func(_ context.Context, id string) error {
+			resolvedID = id
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Resolves: []llm.MemoryResolve{
+					{Query: "User plans to finish the migration", Reason: "task completed"},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I finished the migration"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesResolved != 1 {
+		t.Errorf("MemoriesResolved = %d, want 1", result.MemoriesResolved)
+	}
+	if resolvedID != "existing-1" {
+		t.Errorf("resolved ID = %q, want %q", resolvedID, "existing-1")
+	}
+}
+
+func TestEngine_Add_WithResolvesNoMatch(t *testing.T) {
+	store := &mockStore{
+		findSimilarFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64) ([]*storage.SimilarityResult, error) {
+			return nil, nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Resolves: []llm.MemoryResolve{
+					{Query: "User plans to finish the migration", Reason: "task completed"},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I finished the migration"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesResolved != 0 {
+		t.Errorf("MemoriesResolved = %d, want 0", result.MemoriesResolved)
+	}
+	if len(result.Details) != 1 {
+		t.Fatalf("Details len = %d, want 1", len(result.Details))
+	}
+	if result.Details[0].Action != "skipped" {
+		t.Errorf("Action = %q, want skipped", result.Details[0].Action)
+	}
+	if result.Details[0].Reason != "no matching memory found for resolve" {
+		t.Errorf("Reason = %q, want no matching memory found for resolve", result.Details[0].Reason)
+	}
+}
+
 func TestEngine_Add_Skipped(t *testing.T) {
 	provider := &mockProvider{
 		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
