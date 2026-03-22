@@ -593,12 +593,20 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		// Preserve all goals for delta detection snapshot (includes no_activity)
 		result.allGoalProgress = append([]GoalProgressItem{}, result.GoalProgress...)
 
-		// Filter out no_activity goals — they're noise, not signals
+		// Filter out goals that are noise, not actionable signals:
+		// - no_activity: no related work at all
+		// - expired + stalled: deadline passed and no recent work — nothing to act on
+		// - expired + at_risk: deadline already passed — no longer "at risk", just stale
 		var filteredGoals []GoalProgressItem
 		for _, g := range result.GoalProgress {
-			if g.Status != "no_activity" {
-				filteredGoals = append(filteredGoals, g)
+			if g.Status == "no_activity" {
+				continue
 			}
+			// Expired plans (days_left < 0) that aren't on_track are stale noise
+			if g.DaysLeft < 0 && g.Status != "on_track" {
+				continue
+			}
+			filteredGoals = append(filteredGoals, g)
 		}
 		result.GoalProgress = filteredGoals
 	}

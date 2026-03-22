@@ -40,3 +40,5 @@ Thumbs.db
 *.swp
 *.swo
 test-heartbeat.db.hnsw
+*.db.hnsw
+demo-snapshots.json

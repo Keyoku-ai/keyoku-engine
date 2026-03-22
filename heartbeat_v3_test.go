@@ -1658,3 +1658,100 @@ func TestShiftTier(t *testing.T) {
 		}
 	}
 }
+
+// --- Stale Signal Suppression Tests ---
+
+func TestGoalProgressFilter_ExpiredStalled(t *testing.T) {
+	// GoalProgress items with days_left < 0 and status "stalled" should be filtered out
+	// We test the filtering logic directly by simulating what HeartbeatCheck produces
+	// before the filter runs.
+	goals := []GoalProgressItem{
+		{Plan: &Memory{ID: "plan-expired"}, Status: "stalled", DaysLeft: -2.5, Progress: 0.3},
+		{Plan: &Memory{ID: "plan-active"}, Status: "on_track", DaysLeft: 5, Progress: 0.6},
+		{Plan: &Memory{ID: "plan-expired-at-risk"}, Status: "at_risk", DaysLeft: -1, Progress: 0.2},
+	}
+
+	// Apply the same filter as heartbeat.go
+	var filtered []GoalProgressItem
+	for _, g := range goals {
+		if g.Status == "no_activity" {
+			continue
+		}
+		if g.DaysLeft < 0 && g.Status != "on_track" {
+			continue
+		}
+		filtered = append(filtered, g)
+	}
+
+	if len(filtered) != 1 {
+		t.Errorf("expected 1 goal after filtering, got %d", len(filtered))
+	}
+	if len(filtered) > 0 && filtered[0].Plan.ID != "plan-active" {
+		t.Errorf("expected plan-active to survive filter, got %s", filtered[0].Plan.ID)
+	}
+}
+
+func TestGoalProgressFilter_ExpiredOnTrack_Kept(t *testing.T) {
+	// Plans with days_left < 0 but status "on_track" should be kept (active work despite deadline)
+	goals := []GoalProgressItem{
+		{Plan: &Memory{ID: "plan-overdue-active"}, Status: "on_track", DaysLeft: -1, Progress: 0.8},
+	}
+
+	var filtered []GoalProgressItem
+	for _, g := range goals {
+		if g.Status == "no_activity" {
+			continue
+		}
+		if g.DaysLeft < 0 && g.Status != "on_track" {
+			continue
+		}
+		filtered = append(filtered, g)
+	}
+
+	if len(filtered) != 1 {
+		t.Errorf("expired on_track GoalProgress should be kept, got %d items", len(filtered))
+	}
+}
+
+func TestEvaluateShouldAct_LowTierOnly_NoConfluence(t *testing.T) {
+	// Low-tier-only signals (e.g., patterns) without confluence should NOT trigger act
+	store := &testStore{}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+
+	result := &HeartbeatResult{
+		Patterns: []BehavioralPattern{
+			{Description: "User usually asks about Go on Mondays", Confidence: 0.7},
+		},
+	}
+	cfg := &heartbeatConfig{
+		autonomy: "act",
+	}
+	k.evaluateShouldAct(context.Background(), "entity-1", cfg, result)
+
+	if result.ShouldAct {
+		t.Errorf("low-tier-only signals should not trigger act, got ShouldAct=true, reason=%s", result.DecisionReason)
+	}
+	if result.DecisionReason != "suppress_low_no_confluence" {
+		t.Errorf("DecisionReason = %q, want suppress_low_no_confluence", result.DecisionReason)
+	}
+}
+
+func TestEvaluateShouldAct_NormalTier_PassesThrough(t *testing.T) {
+	// Normal-tier signals (e.g., pending_work) should pass through to act
+	store := &testStore{}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "task-1", Content: "Review PR #42", Importance: 0.8},
+		},
+	}
+	cfg := &heartbeatConfig{
+		autonomy: "act",
+	}
+	k.evaluateShouldAct(context.Background(), "entity-1", cfg, result)
+
+	if !result.ShouldAct {
+		t.Errorf("normal-tier signals should trigger act, got ShouldAct=false, reason=%s", result.DecisionReason)
+	}
+}

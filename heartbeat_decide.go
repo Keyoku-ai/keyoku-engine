@@ -243,6 +243,16 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		return
 	}
 
+	// 9b. Low-tier-only signals require confluence to trigger.
+	// Without enough combined weight, low signals (patterns, sentiment,
+	// relationships, decaying) are informational — not worth acting on.
+	if highestTier == TierLow && !meetsConfluence {
+		result.ShouldAct = false
+		result.DecisionReason = "suppress_low_no_confluence"
+		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_low_no_confluence", highestTier, totalSignals)
+		return
+	}
+
 	// 10. Response rate → cooldown multiplier
 	responseRate := k.calculateResponseRate(ctx, entityID, agentID)
 	result.ResponseRate = responseRate
