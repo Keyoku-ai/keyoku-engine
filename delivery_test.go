@@ -101,8 +101,8 @@ func TestBuildDeliveryMessage_PositiveDeltas(t *testing.T) {
 func TestBuildDeliveryMessage_Empty(t *testing.T) {
 	result := &HeartbeatResult{}
 	msg := buildDeliveryMessage(result)
-	if msg == "" {
-		t.Error("expected fallback message for empty result")
+	if msg != "" {
+		t.Errorf("expected empty message for empty result (skip delivery), got: %s", msg)
 	}
 }
 

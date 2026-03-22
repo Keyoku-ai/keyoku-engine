@@ -133,7 +133,7 @@ func buildDeliveryMessage(result *HeartbeatResult) string {
 	}
 
 	if len(parts) == 0 {
-		return "Heartbeat check-in. Anything worth mentioning based on recent context?"
+		return "" // No concrete signals to deliver — skip rather than send a generic prompt
 	}
 
 	return strings.Join(parts, "\n")
