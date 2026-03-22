@@ -156,6 +156,49 @@ type ActionPriorityResponse struct {
 	Urgency        string   `json:"urgency"` // immediate, soon, can_wait
 }
 
+// HeartbeatVerbosity controls the depth of heartbeat LLM output.
+type HeartbeatVerbosity string
+
+const (
+	VerbosityConversational HeartbeatVerbosity = "conversational"
+	VerbosityStandard       HeartbeatVerbosity = "standard"
+	VerbosityDetailed       HeartbeatVerbosity = "detailed"
+	VerbosityDebug          HeartbeatVerbosity = "debug"
+)
+
+// ParseVerbosity converts a string to HeartbeatVerbosity, defaulting to conversational.
+func ParseVerbosity(s string) HeartbeatVerbosity {
+	switch s {
+	case "standard":
+		return VerbosityStandard
+	case "detailed":
+		return VerbosityDetailed
+	case "debug":
+		return VerbosityDebug
+	case "conversational":
+		return VerbosityConversational
+	default:
+		return VerbosityConversational
+	}
+}
+
+// DeveloperTrace contains engine-owned diagnostic data for heartbeat analysis.
+// Populated by Go code, never by the LLM. Only included at detailed/debug verbosity.
+type DeveloperTrace struct {
+	SignalFingerprint    string            `json:"signal_fingerprint"`
+	SignalClassification map[string]string `json:"signal_classification"` // check_type → tier
+	DecisionReason       string            `json:"decision_reason"`
+	CooldownState        string            `json:"cooldown_state"`        // "active", "expired", "bypassed"
+	ConfluenceScore      int               `json:"confluence_score"`
+	ConfluenceThreshold  int               `json:"confluence_threshold"`
+	ResponseRate         float64           `json:"response_rate"`
+	TimePeriod           string            `json:"time_period"`
+	EscalationLevel      int               `json:"escalation_level"`
+	MemoryVelocity       int               `json:"memory_velocity"`
+	LLMLatencyMs         int64             `json:"llm_latency_ms"`
+	RawPrompt            string            `json:"raw_prompt,omitempty"` // only at debug verbosity
+}
+
 // HeartbeatAnalysisRequest contains input for LLM-powered heartbeat context analysis.
 type HeartbeatAnalysisRequest struct {
 	ActivitySummary  string   // Recent conversation activity from the agent
@@ -192,6 +235,9 @@ type HeartbeatAnalysisRequest struct {
 
 	// v4: Conversation context for topic suppression
 	ConversationHistory []string `json:"conversation_history,omitempty"` // Recent user/agent conversation messages (for suppressing already-discussed topics)
+
+	// v5: Verbosity control
+	Verbosity HeartbeatVerbosity `json:"verbosity,omitempty"` // "conversational", "standard", "detailed", "debug"
 }
 
 // HeartbeatAnalysisResponse contains the LLM's analysis of heartbeat context.
@@ -203,6 +249,13 @@ type HeartbeatAnalysisResponse struct {
 	Reasoning          string   `json:"reasoning"`
 	Autonomy           string   `json:"autonomy"`
 	UserFacing         string   `json:"user_facing"`
+
+	// Extended fields for detailed/debug verbosity
+	Evidence       []string `json:"evidence,omitempty"`        // cited memory content/IDs
+	LinkedEntities []string `json:"linked_entities,omitempty"` // entity names referenced
+
+	// Engine-owned diagnostic data (never LLM-generated)
+	DeveloperTrace *DeveloperTrace `json:"developer_trace,omitempty"`
 }
 
 // GraphSummaryRequest contains input for LLM-powered graph reasoning.

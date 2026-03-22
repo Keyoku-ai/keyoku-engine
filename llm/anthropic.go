@@ -339,7 +339,8 @@ func (a *AnthropicProvider) PrioritizeActions(ctx context.Context, req ActionPri
 }
 
 func (a *AnthropicProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
-	heartbeatProps := ForAnthropicProps(HeartbeatAnalysisSchema())
+	schema := HeartbeatAnalysisSchemaForVerbosity(req.Verbosity)
+	heartbeatProps := ForAnthropicProps(schema)
 	// Add Anthropic-specific descriptions to help the model
 	heartbeatProps["should_act"].(map[string]interface{})["description"] = "Whether the agent should act"
 	heartbeatProps["action_brief"].(map[string]interface{})["description"] = "Summary tailored to autonomy level"

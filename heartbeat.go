@@ -55,6 +55,8 @@ type HeartbeatResult struct {
 	TopicEntities  []string        // Entity IDs from current signals
 	ResponseRate   float64         // 7-day user response rate (0.0-1.0)
 	ConfluenceScore int            // Total signal weight
+	CooldownState   string         // "active", "expired", "bypassed"
+	ConfluenceThreshold int        // Minimum confluence score for current autonomy
 
 	// v3: Memory velocity
 	MemoryVelocity     int  // New memories since last act
@@ -269,6 +271,9 @@ type heartbeatConfig struct {
 
 	// Confidence gating: memories below this threshold are excluded from signals.
 	minConfidence float64 // default: 0.5
+
+	// Verbosity control for LLM analysis
+	verbosity llm.HeartbeatVerbosity
 
 	// Virtual time override (for demo recording)
 	virtualNow time.Time // When non-zero, replaces time.Now() for all signal computation

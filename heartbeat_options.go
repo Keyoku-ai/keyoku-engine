@@ -83,6 +83,11 @@ func WithMinConfidence(f float64) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.minConfidence = f }
 }
 
+// WithVerbosity sets the verbosity level for heartbeat LLM analysis.
+func WithVerbosity(v string) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.verbosity = llm.ParseVerbosity(v) }
+}
+
 func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
 	return func(c *heartbeatConfig) {
 		c.llmProvider = provider
