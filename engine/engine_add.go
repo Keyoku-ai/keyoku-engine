@@ -115,7 +115,8 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 
 	var existingMemories []string
 	for _, sm := range similarMemories {
-		existingMemories = append(existingMemories, sm.Memory.Content)
+		existingMemories = append(existingMemories, fmt.Sprintf("[%s, %s, importance:%.1f] %s",
+			sm.Memory.Type, sm.Memory.State, sm.Memory.Importance, sm.Memory.Content))
 	}
 
 	// Extract memories using LLM
@@ -196,6 +197,12 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 			Reason:  skip.Reason,
 		})
 		result.Skipped++
+	}
+
+	// Auto-resolve: detect when new EVENT/CONTEXT memories supersede existing PLAN/ACTIVITY memories.
+	// Uses similarity results already computed (no extra LLM or embedding calls).
+	if result.MemoriesCreated > 0 && len(similarMemories) > 0 {
+		result.MemoriesResolved += e.autoResolveSuperseded(ctx, entityID, result.Details, similarMemories)
 	}
 
 	// Adaptive importance re-evaluation: check if new content changes importance of related memories
@@ -561,6 +568,73 @@ func (e *Engine) processResolve(ctx context.Context, res llm.MemoryResolve, simi
 		Action:  "resolved",
 		Reason:  res.Reason,
 	}, nil
+}
+
+// autoResolveSuperseded catches cases where the LLM created a completion memory
+// (EVENT/CONTEXT) instead of issuing a resolve action on an existing PLAN/ACTIVITY.
+// Uses the similarity results already computed during Add() — no extra LLM or embedding calls.
+func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, created []MemoryDetail, similar []*storage.SimilarityResult) int {
+	completionTypes := map[storage.MemoryType]bool{
+		storage.TypeEvent:   true,
+		storage.TypeContext: true,
+	}
+	pendingTypes := map[storage.MemoryType]bool{
+		storage.TypePlan:     true,
+		storage.TypeActivity: true,
+	}
+
+	// Collect newly created completion memories
+	createdIDs := make(map[string]bool)
+	hasCompletion := false
+	for _, d := range created {
+		if d.Action == "created" {
+			createdIDs[d.ID] = true
+			if completionTypes[d.Type] {
+				hasCompletion = true
+			}
+		}
+	}
+	if !hasCompletion {
+		return 0
+	}
+
+	const autoResolveThreshold = 0.70
+	resolved := 0
+	for _, sim := range similar {
+		if createdIDs[sim.Memory.ID] {
+			continue
+		}
+		if sim.Memory.State != storage.StateActive {
+			continue
+		}
+		if !pendingTypes[sim.Memory.Type] {
+			continue
+		}
+		if sim.Similarity < autoResolveThreshold {
+			continue
+		}
+
+		// Active PLAN/ACTIVITY is semantically similar to input that produced a
+		// completion memory — the plan was completed, auto-resolve it.
+		if err := e.store.ResolveMemory(ctx, sim.Memory.ID); err != nil {
+			continue
+		}
+		resolved++
+
+		//nolint:errcheck // fire-and-forget logging
+		e.store.LogHistory(ctx, &storage.HistoryEntry{
+			MemoryID:  sim.Memory.ID,
+			Operation: "auto_resolve",
+			Changes:   map[string]any{"content": sim.Memory.Content},
+			Reason:    "superseded by completion memory",
+		})
+
+		e.emit("memory.resolved", entityID, sim.Memory.AgentID, sim.Memory.TeamID, map[string]any{
+			"memory": sim.Memory,
+			"reason": "auto-resolved: similar completion memory created",
+		})
+	}
+	return resolved
 }
 
 // runCustomExtraction runs custom schema extraction alongside default extraction.

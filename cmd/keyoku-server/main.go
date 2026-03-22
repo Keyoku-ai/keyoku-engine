@@ -116,9 +116,17 @@ func main() {
 			}
 		}
 
+		// Wire LLM provider into heartbeat so watcher delivers LLM analysis
+		// (ActionBrief, UserFacing, RecommendedActions) instead of raw signal dumps.
+		if provider := k.Provider(); provider != nil {
+			wcfg.HeartbeatOpts = append(wcfg.HeartbeatOpts,
+				keyoku.WithLLMPrioritization(provider, "", ""),
+			)
+		}
+
 		k.StartWatcher(wcfg)
-		log.Printf("  watcher: auto-started (entities: %v, adaptive: %v, delivery: %v)",
-			wcfg.EntityIDs, wcfg.Adaptive, wcfg.Delivery != nil)
+		log.Printf("  watcher: auto-started (entities: %v, adaptive: %v, delivery: %v, llm: %v)",
+			wcfg.EntityIDs, wcfg.Adaptive, wcfg.Delivery != nil, k.Provider() != nil)
 	}
 
 	// Create SSE hub and bridge events

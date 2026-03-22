@@ -642,3 +642,388 @@ func TestBuildDeliveryMessage_FallbackWithoutEnhanced(t *testing.T) {
 		t.Errorf("expected urgency in fallback message, got: %s", msg)
 	}
 }
+
+// --- Pipeline verification tests: real signals → non-empty delivery ---
+
+func TestPipeline_PendingWorkProducesDeliveryMessage(t *testing.T) {
+	// Verify: when PendingWork exists in HeartbeatResult, the programmatic
+	// fallback (no LLM) produces a non-empty delivery message with signal content.
+	now := time.Now()
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Urgency:        "medium",
+		TimePeriod:     "working",
+		PendingWork: []*Memory{{
+			ID:         "mem-pending-1",
+			Content:    "Review PR #42 for keyoku-engine",
+			Type:       "plan",
+			Importance: 0.9,
+			Confidence: 0.8,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
+	}
+	result.Summary = buildSummary(result)
+
+	msg := buildDeliveryMessage(result)
+	if msg == "" {
+		t.Fatal("expected non-empty delivery message when PendingWork signals exist")
+	}
+	if !strings.Contains(msg, "Review PR #42") {
+		t.Errorf("expected pending work content in message, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Signals:") {
+		t.Errorf("expected Signals section in message, got: %s", msg)
+	}
+}
+
+func TestPipeline_DeadlinesProduceDeliveryMessage(t *testing.T) {
+	expires := time.Now().Add(2 * time.Hour)
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Urgency:        "high",
+		TimePeriod:     "working",
+		Deadlines: []*Memory{{
+			ID:        "mem-deadline-1",
+			Content:   "Ship v2.0 release",
+			Type:      "plan",
+			ExpiresAt: &expires,
+		}},
+	}
+	result.Summary = buildSummary(result)
+
+	msg := buildDeliveryMessage(result)
+	if msg == "" {
+		t.Fatal("expected non-empty delivery message when Deadline signals exist")
+	}
+	if !strings.Contains(msg, "Ship v2.0") {
+		t.Errorf("expected deadline content in message, got: %s", msg)
+	}
+}
+
+func TestPipeline_ScheduledProducesDeliveryMessage(t *testing.T) {
+	now := time.Now()
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Urgency:        "critical",
+		TimePeriod:     "morning",
+		Scheduled: []*Memory{{
+			ID:        "mem-sched-1",
+			Content:   "Daily standup reminder",
+			Type:      "plan",
+			Tags:      []string{"cron:daily:09:00"},
+			CreatedAt: now,
+		}},
+	}
+	result.Summary = buildSummary(result)
+
+	msg := buildDeliveryMessage(result)
+	if msg == "" {
+		t.Fatal("expected non-empty delivery message when Scheduled signals exist")
+	}
+	if !strings.Contains(msg, "Daily standup") {
+		t.Errorf("expected scheduled content in message, got: %s", msg)
+	}
+}
+
+func TestPipeline_MultipleSignalsProduceRichMessage(t *testing.T) {
+	// Multiple signal categories should all appear in the delivery message.
+	now := time.Now()
+	expires := now.Add(6 * time.Hour)
+	result := &HeartbeatResult{
+		DecisionReason:     "act",
+		Urgency:            "high",
+		TimePeriod:         "working",
+		MemoryVelocityHigh: true,
+		MemoryVelocity:     8,
+		EscalationLevel:    2,
+		PendingWork: []*Memory{{
+			ID: "pw-1", Content: "Implement auth module", Type: "plan",
+			Importance: 0.9, CreatedAt: now, UpdatedAt: now,
+		}},
+		Deadlines: []*Memory{{
+			ID: "dl-1", Content: "API redesign deadline", Type: "plan",
+			ExpiresAt: &expires,
+		}},
+		PositiveDeltas: []PositiveDelta{{
+			Type:        "goal_improved",
+			Description: "Auth module moved from stalled to on_track",
+		}},
+	}
+	result.Summary = buildSummary(result)
+
+	msg := buildDeliveryMessage(result)
+	if msg == "" {
+		t.Fatal("expected non-empty delivery message with multiple signals")
+	}
+	// Verify all signal types appear
+	if !strings.Contains(msg, "Implement auth module") {
+		t.Errorf("missing pending work in message")
+	}
+	if !strings.Contains(msg, "8 new memories") {
+		t.Errorf("missing memory velocity in message")
+	}
+	if !strings.Contains(msg, "[+]") {
+		t.Errorf("missing positive delta marker in message")
+	}
+	if !strings.Contains(msg, "direct") {
+		t.Errorf("missing escalation tone in message")
+	}
+}
+
+func TestPipeline_EnhancedAnalysisTakesPrecedence(t *testing.T) {
+	// When EnhancedAnalysis is present with ShouldAct=true, the LLM output
+	// takes priority over the programmatic fallback.
+	result := &HeartbeatResult{
+		DecisionReason: "act",
+		Summary:        "PENDING WORK: something", // would appear in fallback
+		PendingWork: []*Memory{{
+			ID: "pw-1", Content: "fallback content",
+		}},
+		EnhancedAnalysis: &llm.HeartbeatAnalysisResponse{
+			ShouldAct:          true,
+			ActionBrief:        "You have 3 open PRs that need review",
+			RecommendedActions: []string{"Review PR #42", "Merge PR #38"},
+			Urgency:            "high",
+			Autonomy:           "suggest",
+			UserFacing:         "Hey, a few PRs are waiting on you.",
+		},
+	}
+
+	msg := buildDeliveryMessage(result)
+	if msg == "" {
+		t.Fatal("expected non-empty message with enhanced analysis")
+	}
+	// Should use LLM output, NOT fallback
+	if !strings.Contains(msg, "3 open PRs") {
+		t.Errorf("expected LLM action brief, got: %s", msg)
+	}
+	if strings.Contains(msg, "Signals:") {
+		t.Errorf("should NOT fall back to programmatic Signals section when enhanced analysis present")
+	}
+	if !strings.Contains(msg, "Hey, a few PRs") {
+		t.Errorf("expected user-facing message, got: %s", msg)
+	}
+}
+
+func TestPipeline_WatcherDelivery_WithRealSignals(t *testing.T) {
+	// End-to-end: watcher tick → HeartbeatCheck with real signals → delivery.
+	// Verifies that when PendingWork memories exist, the watcher calls Deliver
+	// and the message contains actual signal content.
+	now := time.Now()
+
+	var deliveredMessage string
+	var deliveredEntityID string
+
+	store := &testStore{
+		queryMemoriesFn: func(ctx context.Context, query storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(query.Types) > 0 && (query.Types[0] == storage.TypePlan || query.Types[0] == storage.TypeActivity) {
+				return []*storage.Memory{{
+					ID:         "mem-work-1",
+					EntityID:   "entity-1",
+					Content:    "Deploy keyoku-engine v0.7.0 to production",
+					Type:       storage.TypePlan,
+					State:      storage.StateActive,
+					Importance: 0.9,
+					Confidence: 0.8,
+					CreatedAt:  now,
+					UpdatedAt:  now,
+				}}, nil
+			}
+			return nil, nil
+		},
+		getStaleMemoriesFn: func(ctx context.Context, entityID string, threshold float64) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+	}
+
+	bus := NewEventBus(false)
+	k := &Keyoku{
+		store:              store,
+		eventBus:           bus,
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	// Custom deliverer that captures the message
+	capturingDeliverer := &capturingMockDeliverer{}
+
+	w := newWatcher(k, WatcherConfig{
+		Interval:  50 * time.Millisecond,
+		EntityIDs: []string{"entity-1"},
+	})
+	w.deliverer = capturingDeliverer
+	w.Start()
+	time.Sleep(200 * time.Millisecond)
+	w.Stop()
+
+	if capturingDeliverer.calls.Load() == 0 {
+		t.Fatal("expected at least one delivery call")
+	}
+	deliveredMessage = capturingDeliverer.lastMessage
+	deliveredEntityID = capturingDeliverer.lastEntityID
+
+	if deliveredEntityID != "entity-1" {
+		t.Errorf("expected entity-1, got %s", deliveredEntityID)
+	}
+	if deliveredMessage == "" {
+		t.Fatal("delivery message was empty — signals not reaching delivery")
+	}
+	if !strings.Contains(deliveredMessage, "Deploy keyoku-engine v0.7.0") {
+		t.Errorf("delivery message missing signal content, got: %s", deliveredMessage)
+	}
+}
+
+func TestPipeline_WatcherDelivery_WithLLMProvider(t *testing.T) {
+	// End-to-end: watcher with LLM provider → HeartbeatCheck with signals →
+	// LLM analysis → delivery with EnhancedAnalysis content.
+	now := time.Now()
+
+	store := &testStore{
+		queryMemoriesFn: func(ctx context.Context, query storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(query.Types) > 0 && (query.Types[0] == storage.TypePlan || query.Types[0] == storage.TypeActivity) {
+				return []*storage.Memory{{
+					ID:         "mem-pr-1",
+					EntityID:   "entity-1",
+					Content:    "Review Copilot suggestions on PR #15",
+					Type:       storage.TypePlan,
+					State:      storage.StateActive,
+					Importance: 0.85,
+					Confidence: 0.9,
+					CreatedAt:  now,
+					UpdatedAt:  now,
+				}}, nil
+			}
+			return nil, nil
+		},
+		getStaleMemoriesFn: func(ctx context.Context, entityID string, threshold float64) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+	}
+
+	llmProvider := &testLLMProvider{
+		analyzeHeartbeatFn: func(ctx context.Context, req llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+			return &llm.HeartbeatAnalysisResponse{
+				ShouldAct:          true,
+				ActionBrief:        "PR #15 has Copilot suggestions waiting for review",
+				RecommendedActions: []string{"Review and apply valid suggestions", "Tag author for unclear ones"},
+				Urgency:            "medium",
+				Autonomy:           "act",
+				UserFacing:         "I'll review the Copilot suggestions on PR #15.",
+			}, nil
+		},
+	}
+
+	bus := NewEventBus(false)
+	k := &Keyoku{
+		store:              store,
+		eventBus:           bus,
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	capturingDeliverer := &capturingMockDeliverer{}
+
+	w := newWatcher(k, WatcherConfig{
+		Interval:  50 * time.Millisecond,
+		EntityIDs: []string{"entity-1"},
+		HeartbeatOpts: []HeartbeatOption{
+			WithLLMPrioritization(llmProvider, "", ""),
+		},
+	})
+	w.deliverer = capturingDeliverer
+	w.Start()
+	time.Sleep(200 * time.Millisecond)
+	w.Stop()
+
+	if capturingDeliverer.calls.Load() == 0 {
+		t.Fatal("expected at least one delivery call with LLM provider")
+	}
+
+	msg := capturingDeliverer.lastMessage
+	if msg == "" {
+		t.Fatal("delivery message was empty with LLM provider")
+	}
+	// Should use LLM enhanced analysis output
+	if !strings.Contains(msg, "Copilot suggestions") {
+		t.Errorf("expected LLM analysis content in delivery, got: %s", msg)
+	}
+	if !strings.Contains(msg, "Tell the User") {
+		t.Errorf("expected user-facing section from LLM, got: %s", msg)
+	}
+}
+
+func TestPipeline_EmptyResultNoDelivery(t *testing.T) {
+	// Verify: completely empty HeartbeatResult → no delivery (v0.6.2 fix).
+	result := &HeartbeatResult{}
+	msg := buildDeliveryMessage(result)
+	if msg != "" {
+		t.Errorf("empty result should produce empty message (no delivery), got: %s", msg)
+	}
+
+	// Also verify via CLIDeliverer — Deliver() should skip
+	runner := &mockRunner{output: []byte("ok")}
+	d := NewCLIDeliverer(DeliveryConfig{Command: "openclaw", Channel: "telegram", Recipient: "-123"})
+	d.runner = runner
+
+	err := d.Deliver(context.Background(), "user-1", result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.lastCmd != "" {
+		t.Error("expected command NOT to be executed for empty result")
+	}
+}
+
+func TestPipeline_SummaryAlwaysBuiltFromSignals(t *testing.T) {
+	// Verify that buildSummary produces structured text from all signal types.
+	now := time.Now()
+	expires := now.Add(3 * time.Hour)
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "pw-1", Content: "Finish API migration", Type: "plan", Importance: 0.8, CreatedAt: now, UpdatedAt: now},
+		},
+		Deadlines: []*Memory{
+			{ID: "dl-1", Content: "Client demo", ExpiresAt: &expires},
+		},
+		Scheduled: []*Memory{
+			{ID: "sc-1", Content: "Weekly report", Tags: []string{"cron:weekly:mon:09:00"}},
+		},
+		StaleMonitors: []*Memory{
+			{ID: "sm-1", Content: "Monitor CI pipeline"},
+		},
+	}
+
+	summary := buildSummary(result)
+	if summary == "" {
+		t.Fatal("expected non-empty summary from signals")
+	}
+	checks := map[string]string{
+		"PENDING WORK":    "Finish API migration",
+		"DEADLINES":       "Client demo",
+		"SCHEDULED TASKS": "Weekly report",
+		"STALE MONITORS":  "Monitor CI pipeline",
+	}
+	for section, content := range checks {
+		if !strings.Contains(summary, section) {
+			t.Errorf("summary missing section %q", section)
+		}
+		if !strings.Contains(summary, content) {
+			t.Errorf("summary missing content %q from section %q", content, section)
+		}
+	}
+}
+
+// capturingMockDeliverer records delivery calls AND captures the actual message.
+type capturingMockDeliverer struct {
+	calls        atomic.Int32
+	lastMessage  string
+	lastEntityID string
+}
+
+func (m *capturingMockDeliverer) Deliver(ctx context.Context, entityID string, result *HeartbeatResult) error {
+	m.calls.Add(1)
+	m.lastEntityID = entityID
+	m.lastMessage = buildDeliveryMessage(result)
+	return nil
+}

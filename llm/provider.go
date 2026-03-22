@@ -102,6 +102,7 @@ const extractionPrompt = `You are a memory extraction system. Your job is to ana
 %s
 
 ## EXISTING MEMORIES (that might need updating)
+Each memory is formatted as: [TYPE, STATE, importance:X.X] content
 %s
 
 ## MEMORY TYPES (with stability in days - determines how fast they decay)
@@ -176,7 +177,8 @@ Extract relationships between entities:
 4. Classify, score importance, score confidence
 5. Check if this UPDATES, RESOLVES, or CONTRADICTS existing memories
    - If the user corrects a fact ("actually", "changed my mind") → suggest UPDATE or DELETE
-   - If the user says a task/issue/plan is done, resolved, finished, completed, handled, fixed, or no longer needs attention → suggest RESOLVE, not DELETE
+   - If the user says a task/issue/plan is done, resolved, finished, completed, handled, fixed, or no longer needs attention → suggest RESOLVE, not DELETE. Look for existing [PLAN] or [ACTIVITY] memories above that match and RESOLVE them.
+   - IMPORTANT: When resolving, do NOT also create a new memory about the same topic. A resolve action is sufficient.
    - Use DELETE only when the memory should be removed entirely, not when it should remain searchable as completed history
    - Reference the context to understand corrections
 6. Normalize content to third person AND prefix with the category keyword so memories are findable by topic:

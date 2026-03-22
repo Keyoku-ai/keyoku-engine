@@ -1106,3 +1106,179 @@ func TestEngine_Add_WithUpdates_EmbeddingFallback(t *testing.T) {
 		t.Errorf("updated content = %q, want 'User now prefers Julia for data science'", updatedContent)
 	}
 }
+
+// --- Auto-resolve tests ---
+
+func TestAutoResolve_PlanSupersededByEvent(t *testing.T) {
+	// Existing active PLAN memory
+	existingPlan := testMemory("plan-1", "User plans to fix the deployment bug")
+	existingPlan.Type = storage.TypePlan
+	existingPlan.State = storage.StateActive
+	existingPlan.Importance = 1.0
+
+	var resolvedID string
+	store := &mockStore{
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingPlan, Similarity: 0.82},
+			}, nil
+		},
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "event-1"
+			return nil
+		},
+		resolveMemoryFn: func(_ context.Context, id string) error {
+			resolvedID = id
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "User fixed the deployment bug", Type: "EVENT", Importance: 0.6, Confidence: 0.9},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I fixed the deployment bug"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesCreated != 1 {
+		t.Errorf("MemoriesCreated = %d, want 1", result.MemoriesCreated)
+	}
+	if result.MemoriesResolved != 1 {
+		t.Errorf("MemoriesResolved = %d, want 1", result.MemoriesResolved)
+	}
+	if resolvedID != "plan-1" {
+		t.Errorf("resolved ID = %q, want %q", resolvedID, "plan-1")
+	}
+}
+
+func TestAutoResolve_LowSimilaritySkipped(t *testing.T) {
+	existingPlan := testMemory("plan-1", "User plans to fix the deployment bug")
+	existingPlan.Type = storage.TypePlan
+	existingPlan.State = storage.StateActive
+
+	store := &mockStore{
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingPlan, Similarity: 0.55}, // below 0.70 threshold
+			}, nil
+		},
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "event-1"
+			return nil
+		},
+		resolveMemoryFn: func(_ context.Context, _ string) error {
+			t.Error("ResolveMemory should not be called for low similarity")
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "User fixed something unrelated", Type: "EVENT", Importance: 0.5, Confidence: 0.9},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I fixed something unrelated"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesResolved != 0 {
+		t.Errorf("MemoriesResolved = %d, want 0", result.MemoriesResolved)
+	}
+}
+
+func TestAutoResolve_NonPlanTypesUntouched(t *testing.T) {
+	// IDENTITY memory should never be auto-resolved
+	existingIdentity := testMemory("id-1", "User works at Acme Corp")
+	existingIdentity.Type = storage.TypeIdentity
+	existingIdentity.State = storage.StateActive
+
+	store := &mockStore{
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingIdentity, Similarity: 0.85},
+			}, nil
+		},
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "event-1"
+			return nil
+		},
+		resolveMemoryFn: func(_ context.Context, _ string) error {
+			t.Error("ResolveMemory should not be called for non-PLAN types")
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "User left Acme Corp", Type: "EVENT", Importance: 0.7, Confidence: 0.9},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I left Acme Corp"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesResolved != 0 {
+		t.Errorf("MemoriesResolved = %d, want 0 (non-PLAN types should not be auto-resolved)", result.MemoriesResolved)
+	}
+}
+
+func TestAutoResolve_ActivitySuperseded(t *testing.T) {
+	existingActivity := testMemory("act-1", "User is working on the API refactor")
+	existingActivity.Type = storage.TypeActivity
+	existingActivity.State = storage.StateActive
+
+	var resolvedID string
+	store := &mockStore{
+		findSimilarWithOptionsFn: func(_ context.Context, _ []float32, _ string, _ int, _ float64, _ storage.SimilarityOptions) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: existingActivity, Similarity: 0.78},
+			}, nil
+		},
+		createMemoryFn: func(_ context.Context, mem *storage.Memory) error {
+			mem.ID = "event-1"
+			return nil
+		},
+		resolveMemoryFn: func(_ context.Context, id string) error {
+			resolvedID = id
+			return nil
+		},
+	}
+	provider := &mockProvider{
+		extractMemoriesFn: func(_ context.Context, _ llm.ExtractionRequest) (*llm.ExtractionResponse, error) {
+			return &llm.ExtractionResponse{
+				Memories: []llm.ExtractedMemory{
+					{Content: "User completed the API refactor", Type: "EVENT", Importance: 0.6, Confidence: 0.9},
+				},
+			}, nil
+		},
+	}
+	e := newTestEngine(store, provider, &mockEmbedder{dimensions: 3})
+
+	result, err := e.Add(context.Background(), "entity-1", AddRequest{Content: "I completed the API refactor"})
+	if err != nil {
+		t.Fatalf("Add error = %v", err)
+	}
+	if result.MemoriesResolved != 1 {
+		t.Errorf("MemoriesResolved = %d, want 1", result.MemoriesResolved)
+	}
+	if resolvedID != "act-1" {
+		t.Errorf("resolved ID = %q, want %q", resolvedID, "act-1")
+	}
+}
