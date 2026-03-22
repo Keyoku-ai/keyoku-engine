@@ -602,8 +602,9 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			if g.Status == "no_activity" {
 				continue
 			}
-			// Expired plans (days_left < 0) that aren't on_track are stale noise
-			if g.DaysLeft < 0 && g.Status != "on_track" {
+			// Expired plans with a real deadline (days_left < 0) that aren't on_track are stale noise.
+			// Plans with no deadline use DaysLeft == -1 as a sentinel and should not be treated as expired.
+			if g.Plan != nil && g.Plan.ExpiresAt != nil && g.DaysLeft < 0 && g.Status != "on_track" {
 				continue
 			}
 			filteredGoals = append(filteredGoals, g)

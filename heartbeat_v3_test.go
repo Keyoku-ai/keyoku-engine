@@ -1661,56 +1661,152 @@ func TestShiftTier(t *testing.T) {
 
 // --- Stale Signal Suppression Tests ---
 
-func TestGoalProgressFilter_ExpiredStalled(t *testing.T) {
-	// GoalProgress items with days_left < 0 and status "stalled" should be filtered out
-	// We test the filtering logic directly by simulating what HeartbeatCheck produces
-	// before the filter runs.
-	goals := []GoalProgressItem{
-		{Plan: &Memory{ID: "plan-expired"}, Status: "stalled", DaysLeft: -2.5, Progress: 0.3},
-		{Plan: &Memory{ID: "plan-active"}, Status: "on_track", DaysLeft: 5, Progress: 0.6},
-		{Plan: &Memory{ID: "plan-expired-at-risk"}, Status: "at_risk", DaysLeft: -1, Progress: 0.2},
+func TestGoalProgressFilter_ExpiredPlanFiltered(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(-24 * time.Hour)
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-expired",
+			Content:    "Submit launch checklist",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+			ExpiresAt:  &expiresAt,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Worked on launch checklist",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
 	}
-
-	// Apply the same filter as heartbeat.go
-	var filtered []GoalProgressItem
-	for _, g := range goals {
-		if g.Status == "no_activity" {
-			continue
-		}
-		if g.DaysLeft < 0 && g.Status != "on_track" {
-			continue
-		}
-		filtered = append(filtered, g)
+	if len(result.allGoalProgress) != 1 {
+		t.Fatalf("allGoalProgress count = %d, want 1", len(result.allGoalProgress))
 	}
-
-	if len(filtered) != 1 {
-		t.Errorf("expected 1 goal after filtering, got %d", len(filtered))
+	if result.allGoalProgress[0].Status != "stalled" {
+		t.Errorf("expired plan status = %q, want stalled before filtering", result.allGoalProgress[0].Status)
 	}
-	if len(filtered) > 0 && filtered[0].Plan.ID != "plan-active" {
-		t.Errorf("expected plan-active to survive filter, got %s", filtered[0].Plan.ID)
+	if len(result.GoalProgress) != 0 {
+		t.Fatalf("GoalProgress count = %d, want 0 for expired stale goal", len(result.GoalProgress))
 	}
 }
 
-func TestGoalProgressFilter_ExpiredOnTrack_Kept(t *testing.T) {
-	// Plans with days_left < 0 but status "on_track" should be kept (active work despite deadline)
-	goals := []GoalProgressItem{
-		{Plan: &Memory{ID: "plan-overdue-active"}, Status: "on_track", DaysLeft: -1, Progress: 0.8},
+func TestGoalProgressFilter_FutureExpiryPlanKept(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(7 * 24 * time.Hour)
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-future",
+			Content:    "Ship onboarding update",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+			ExpiresAt:  &expiresAt,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Outlined onboarding changes",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.GoalProgress) != 1 {
+		t.Fatalf("GoalProgress count = %d, want 1", len(result.GoalProgress))
+	}
+	if result.GoalProgress[0].Plan.ID != "plan-future" {
+		t.Errorf("GoalProgress plan ID = %q, want plan-future", result.GoalProgress[0].Plan.ID)
+	}
+	if result.GoalProgress[0].Status != "at_risk" {
+		t.Errorf("future-expiry status = %q, want at_risk", result.GoalProgress[0].Status)
+	}
+}
+
+func TestGoalProgressFilter_NoExpiryPlanNotMisclassified(t *testing.T) {
+	now := time.Now().UTC()
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-no-expiry",
+			Content:    "Refactor heartbeat prompts",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Started prompt refactor",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.GoalProgress) != 1 {
+		t.Fatalf("GoalProgress count = %d, want 1", len(result.GoalProgress))
+	}
+	if result.GoalProgress[0].Plan.ID != "plan-no-expiry" {
+		t.Errorf("GoalProgress plan ID = %q, want plan-no-expiry", result.GoalProgress[0].Plan.ID)
+	}
+	if result.GoalProgress[0].Status != "stalled" {
+		t.Errorf("no-expiry status = %q, want stalled", result.GoalProgress[0].Status)
+	}
+	if result.GoalProgress[0].DaysLeft != -1 {
+		t.Errorf("DaysLeft = %v, want -1 sentinel", result.GoalProgress[0].DaysLeft)
+	}
+}
+
+func runGoalProgressCheck(t *testing.T, now time.Time, plan *storage.Memory, activity *storage.Memory) (*HeartbeatResult, error) {
+	t.Helper()
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{plan}, nil
+			}
+			return nil, nil
+		},
+		findSimilarFn: func(_ context.Context, embedding []float32, entityID string, limit int, minScore float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: activity, Similarity: 0.9},
+			}, nil
+		},
 	}
 
-	var filtered []GoalProgressItem
-	for _, g := range goals {
-		if g.Status == "no_activity" {
-			continue
-		}
-		if g.DaysLeft < 0 && g.Status != "on_track" {
-			continue
-		}
-		filtered = append(filtered, g)
+	k := &Keyoku{
+		store: store,
+		emb:   &goalProgressTestEmbedder{},
 	}
 
-	if len(filtered) != 1 {
-		t.Errorf("expired on_track GoalProgress should be kept, got %d items", len(filtered))
+	return k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckGoalProgress),
+		WithVirtualNow(now))
+}
+
+type goalProgressTestEmbedder struct{}
+
+func (e *goalProgressTestEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	return []float32{1, 0, 0}, nil
+}
+
+func (e *goalProgressTestEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = []float32{1, 0, 0}
 	}
+	return result, nil
+}
+
+func (e *goalProgressTestEmbedder) Dimensions() int {
+	return 3
 }
 
 func TestEvaluateShouldAct_LowTierOnly_NoConfluence(t *testing.T) {
