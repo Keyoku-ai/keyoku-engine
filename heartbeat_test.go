@@ -587,8 +587,9 @@ func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
 		agentID:     "agent-1",
 	}
 	result := &HeartbeatResult{
-		Summary:    "PR #42 merged, deployment pending",
-		TimePeriod: "last 2 hours",
+		Summary:          "PR #42 merged, deployment pending",
+		TimePeriod:       "last 2 hours",
+		ConfluenceScore:  99,
 		PendingWork: []*storage.Memory{
 			{Content: "Deploy after PR merge"},
 		},
@@ -618,6 +619,9 @@ func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
 	if len(capturedReq.PendingWork) != 1 {
 		t.Errorf("PendingWork = %d, want 1", len(capturedReq.PendingWork))
 	}
+	if capturedReq.SignalCount != 1 {
+		t.Errorf("SignalCount = %d, want 1 active signal", capturedReq.SignalCount)
+	}
 
 	// Verify autonomy was forwarded
 	if capturedReq.Autonomy != "suggest" {
@@ -638,6 +642,88 @@ func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
 	// so urgency stays unchanged. The EnhancedAnalysis still holds the original LLM urgency.
 	if result.EnhancedAnalysis.Urgency != "medium" {
 		t.Errorf("EnhancedAnalysis.Urgency = %q, want 'medium'", result.EnhancedAnalysis.Urgency)
+	}
+}
+
+func TestRunEnhancedLLMAnalysis_DeveloperTraceVerbosity(t *testing.T) {
+	tests := []struct {
+		name          string
+		verbosity     llm.HeartbeatVerbosity
+		wantTrace     bool
+		wantRawPrompt bool
+	}{
+		{name: "conversational", verbosity: llm.VerbosityConversational},
+		{name: "standard", verbosity: llm.VerbosityStandard},
+		{name: "detailed", verbosity: llm.VerbosityDetailed, wantTrace: true},
+		{name: "debug", verbosity: llm.VerbosityDebug, wantTrace: true, wantRawPrompt: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := &testLLMProvider{
+				analyzeHeartbeatFn: func(_ context.Context, _ llm.HeartbeatAnalysisRequest) (*llm.HeartbeatAnalysisResponse, error) {
+					return &llm.HeartbeatAnalysisResponse{
+						ShouldAct:   true,
+						ActionBrief: "Follow up",
+						Urgency:     "medium",
+						Autonomy:    "suggest",
+						UserFacing:  "Follow up on the plan.",
+					}, nil
+				},
+			}
+
+			k := NewForTesting(&testStore{})
+			cfg := &heartbeatConfig{
+				llmProvider: provider,
+				autonomy:    "suggest",
+				verbosity:   tt.verbosity,
+			}
+			result := &HeartbeatResult{
+				Summary:             "Follow up needed",
+				PendingWork:         []*storage.Memory{{Content: "Ship release"}},
+				SignalFingerprint:   "fp-123",
+				DecisionReason:      "act",
+				CooldownState:       "expired",
+				ConfluenceScore:     3,
+				ConfluenceThreshold: 12,
+				ResponseRate:        0.5,
+				TimePeriod:          "working",
+				EscalationLevel:     2,
+				MemoryVelocity:      4,
+				HighestUrgencyTier:  TierNormal,
+			}
+
+			resp := k.runEnhancedLLMAnalysis(context.Background(), "user-1", cfg, result)
+			if resp == nil {
+				t.Fatal("expected non-nil response")
+			}
+
+			if tt.wantTrace {
+				if resp.DeveloperTrace == nil {
+					t.Fatal("expected developer trace")
+				}
+				if resp.DeveloperTrace.CooldownState != "expired" {
+					t.Errorf("CooldownState = %q, want expired", resp.DeveloperTrace.CooldownState)
+				}
+				if resp.DeveloperTrace.ConfluenceThreshold != 12 {
+					t.Errorf("ConfluenceThreshold = %d, want 12", resp.DeveloperTrace.ConfluenceThreshold)
+				}
+				if resp.DeveloperTrace.SignalClassification["pending_work"] != TierNormal {
+					t.Errorf("pending_work classification = %q, want %q", resp.DeveloperTrace.SignalClassification["pending_work"], TierNormal)
+				}
+				if tt.wantRawPrompt && resp.DeveloperTrace.RawPrompt == "" {
+					t.Error("expected raw prompt in debug mode")
+				}
+				if !tt.wantRawPrompt && resp.DeveloperTrace.RawPrompt != "" {
+					t.Errorf("RawPrompt = %q, want empty", resp.DeveloperTrace.RawPrompt)
+				}
+				return
+			}
+
+			if resp.DeveloperTrace != nil {
+				t.Fatalf("DeveloperTrace = %+v, want nil", resp.DeveloperTrace)
+			}
+		})
 	}
 }
 

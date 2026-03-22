@@ -203,6 +203,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	result.HighestUrgencyTier = highestTier
 
 	// 5. Confluence scoring — multiple weak signals can combine
+	result.ConfluenceThreshold = confluenceThreshold[autonomy]
 	confluenceWeight, meetsConfluence := calculateSignalConfluence(activeSignals, autonomy, result)
 	result.ConfluenceScore = confluenceWeight
 
@@ -217,6 +218,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	// 8. Immediate tier bypasses cooldown but still checks novelty.
 	// If the exact same signals were acted on recently (within 30 min), suppress to prevent spam.
 	if highestTier == TierImmediate {
+		result.CooldownState = "bypassed"
 		if err == nil && lastAct != nil && lastAct.SignalFingerprint == fingerprint {
 			immediateStaleCooldown := 30 * time.Minute
 			if now.Sub(lastAct.ActedAt) < immediateStaleCooldown {
@@ -248,6 +250,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 
 	// 11. Cooldown check (with response rate multiplier)
 	// Immediate tier bypasses cooldown entirely — these are time-sensitive (deadlines, scheduled).
+	result.CooldownState = "expired"
 	if err == nil && lastAct != nil && highestTier != TierImmediate {
 		cooldown := params.SignalCooldownNormal
 		if highestTier == TierLow {
@@ -258,6 +261,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		cooldown = time.Duration(float64(cooldown) * multiplier * timePeriodCooldownMultiplier(period))
 
 		if now.Sub(lastAct.ActedAt) < cooldown {
+			result.CooldownState = "active"
 			result.ShouldAct = false
 			result.DecisionReason = "suppress_cooldown"
 			k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_cooldown", highestTier, totalSignals)
@@ -1055,7 +1059,9 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 		trace := &llm.DeveloperTrace{
 			SignalFingerprint:   result.SignalFingerprint,
 			DecisionReason:      result.DecisionReason,
+			CooldownState:       result.CooldownState,
 			ConfluenceScore:     result.ConfluenceScore,
+			ConfluenceThreshold: result.ConfluenceThreshold,
 			ResponseRate:        result.ResponseRate,
 			TimePeriod:          result.TimePeriod,
 			EscalationLevel:     result.EscalationLevel,

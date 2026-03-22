@@ -55,6 +55,8 @@ type HeartbeatResult struct {
 	TopicEntities  []string        // Entity IDs from current signals
 	ResponseRate   float64         // 7-day user response rate (0.0-1.0)
 	ConfluenceScore int            // Total signal weight
+	CooldownState   string         // "active", "expired", "bypassed"
+	ConfluenceThreshold int        // Minimum confluence score for current autonomy
 
 	// v3: Memory velocity
 	MemoryVelocity     int  // New memories since last act

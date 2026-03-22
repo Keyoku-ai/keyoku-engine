@@ -154,6 +154,11 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	if req.Verbosity != "" {
 		hbOpts = append(hbOpts, keyoku.WithVerbosity(req.Verbosity))
 	}
+	if req.Analyze {
+		if provider := h.k.Provider(); provider != nil {
+			hbOpts = append(hbOpts, keyoku.WithLLMPrioritization(provider, "", ""))
+		}
+	}
 	if req.VirtualNow != "" {
 		if t, err := time.Parse(time.RFC3339, req.VirtualNow); err == nil {
 			hbOpts = append(hbOpts, keyoku.WithVirtualNow(t))
@@ -327,152 +332,42 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	// 4. LLM analysis — only when engine decided to act (saves ~90% of LLM calls)
-	if req.Analyze && resp.ShouldAct {
-		provider := h.k.Provider()
-		if provider != nil {
-			autonomy := req.Autonomy
-			if autonomy == "" {
-				autonomy = "suggest"
-			}
+	// 4. LLM analysis — use the engine-owned analysis path so developer_trace is
+	// populated consistently for detailed/debug verbosity.
+	if req.Analyze && resp.ShouldAct && hbResult.EnhancedAnalysis != nil {
+		analysisResult := hbResult.EnhancedAnalysis
+		resp.Analysis = &heartbeatAnalysisJSON{
+			ShouldAct:          analysisResult.ShouldAct,
+			ActionBrief:        analysisResult.ActionBrief,
+			RecommendedActions: analysisResult.RecommendedActions,
+			Urgency:            analysisResult.Urgency,
+			Reasoning:          analysisResult.Reasoning,
+			Autonomy:           analysisResult.Autonomy,
+			UserFacing:         analysisResult.UserFacing,
+			Evidence:           analysisResult.Evidence,
+			LinkedEntities:     analysisResult.LinkedEntities,
+		}
+		// LLM can only suppress should_act (gate), never promote it
+		if resp.ShouldAct && !analysisResult.ShouldAct {
+			resp.ShouldAct = false
+			resp.DecisionReason = "suppress_llm"
+		}
 
-			// Build string slices from signals for the LLM
-			scheduled := make([]string, 0, len(hbResult.Scheduled))
-			for _, m := range hbResult.Scheduled {
-				scheduled = append(scheduled, m.Content)
+		if analysisResult.DeveloperTrace != nil {
+			resp.DeveloperTrace = &developerTraceJSON{
+				SignalFingerprint:    analysisResult.DeveloperTrace.SignalFingerprint,
+				SignalClassification: analysisResult.DeveloperTrace.SignalClassification,
+				DecisionReason:       analysisResult.DeveloperTrace.DecisionReason,
+				CooldownState:        analysisResult.DeveloperTrace.CooldownState,
+				ConfluenceScore:      analysisResult.DeveloperTrace.ConfluenceScore,
+				ConfluenceThreshold:  analysisResult.DeveloperTrace.ConfluenceThreshold,
+				ResponseRate:         analysisResult.DeveloperTrace.ResponseRate,
+				TimePeriod:           analysisResult.DeveloperTrace.TimePeriod,
+				EscalationLevel:      analysisResult.DeveloperTrace.EscalationLevel,
+				MemoryVelocity:       analysisResult.DeveloperTrace.MemoryVelocity,
+				LLMLatencyMs:         analysisResult.DeveloperTrace.LLMLatencyMs,
+				RawPrompt:            analysisResult.DeveloperTrace.RawPrompt,
 			}
-			deadlines := make([]string, 0, len(hbResult.Deadlines))
-			for _, m := range hbResult.Deadlines {
-				deadlines = append(deadlines, m.Content)
-			}
-			pendingWork := make([]string, 0, len(hbResult.PendingWork))
-			for _, m := range hbResult.PendingWork {
-				pendingWork = append(pendingWork, m.Content)
-			}
-			conflictStrs := make([]string, 0, len(hbResult.Conflicts))
-			for _, c := range hbResult.Conflicts {
-				conflictStrs = append(conflictStrs, c.Reason)
-			}
-			memoryStrs := make([]string, 0, len(relevantMemories))
-			for _, m := range relevantMemories {
-				memoryStrs = append(memoryStrs, m.Memory.Content)
-			}
-
-			// Build extended signal strings for LLM
-			goalProgressStrs := make([]string, 0, len(hbResult.GoalProgress))
-			for _, g := range hbResult.GoalProgress {
-				daysStr := "no deadline"
-				if g.DaysLeft >= 0 {
-					daysStr = fmt.Sprintf("%.0f days left", g.DaysLeft)
-				}
-				goalProgressStrs = append(goalProgressStrs, fmt.Sprintf("%s (%.0f%% done, %s, status: %s)",
-					g.Plan.Content, g.Progress*100, daysStr, g.Status))
-			}
-
-			var continuityStr string
-			if hbResult.Continuity != nil && hbResult.Continuity.WasInterrupted {
-				continuityStr = fmt.Sprintf("%s (last active %.0f hours ago)",
-					hbResult.Continuity.ResumeSuggestion, hbResult.Continuity.SessionAge.Hours())
-			}
-
-			var sentimentStr string
-			if hbResult.Sentiment != nil {
-				sentimentStr = fmt.Sprintf("Trend: %s (recent avg: %.2f, previous avg: %.2f, delta: %.2f)",
-					hbResult.Sentiment.Direction, hbResult.Sentiment.RecentAvg, hbResult.Sentiment.PreviousAvg, hbResult.Sentiment.Delta)
-			}
-
-			relationshipStrs := make([]string, 0, len(hbResult.Relationships))
-			for _, ra := range hbResult.Relationships {
-				relationshipStrs = append(relationshipStrs, fmt.Sprintf("%s: silent for %d days [%s]",
-					ra.Entity.CanonicalName, ra.DaysSilent, ra.Urgency))
-			}
-
-			knowledgeStrs := make([]string, 0, len(hbResult.KnowledgeGaps))
-			for _, kg := range hbResult.KnowledgeGaps {
-				knowledgeStrs = append(knowledgeStrs, kg.Question)
-			}
-
-			patternStrs := make([]string, 0, len(hbResult.Patterns))
-			for _, bp := range hbResult.Patterns {
-				patternStrs = append(patternStrs, fmt.Sprintf("%s (confidence: %.0f%%)", bp.Description, bp.Confidence*100))
-			}
-
-			activitySummary := req.ActivitySummary
-			if activitySummary == "" {
-				activitySummary = req.Query // fall back to query
-			}
-
-			// v2: Format positive deltas for LLM
-			var deltaStrs []string
-			for _, d := range hbResult.PositiveDeltas {
-				deltaStrs = append(deltaStrs, fmt.Sprintf("[%s] %s", d.Type, d.Description))
-			}
-
-			verbosity := llm.ParseVerbosity(req.Verbosity)
-
-			analysisResult, err := provider.AnalyzeHeartbeatContext(r.Context(), keyoku.HeartbeatAnalysisRequest{
-				ActivitySummary:    activitySummary,
-				Scheduled:          scheduled,
-				Deadlines:          deadlines,
-				PendingWork:        pendingWork,
-				Conflicts:          conflictStrs,
-				RelevantMemories:   memoryStrs,
-				Autonomy:           autonomy,
-				AgentID:            req.AgentID,
-				EntityID:           req.EntityID,
-				GoalProgress:       goalProgressStrs,
-				Continuity:         continuityStr,
-				SentimentTrend:     sentimentStr,
-				RelationshipAlerts: relationshipStrs,
-				KnowledgeGaps:      knowledgeStrs,
-				BehavioralPatterns: patternStrs,
-				GraphContext:       hbResult.GraphContext,
-				PositiveDeltas:     deltaStrs,
-				TimePeriod:         hbResult.TimePeriod,
-				EscalationLevel:    hbResult.EscalationLevel,
-				RecentMessages:     resp.RecentMessages,
-				MemoryVelocity:     hbResult.MemoryVelocity,
-				SignalUrgencyTier:  hbResult.HighestUrgencyTier,
-				SignalCount:        hbResult.ConfluenceScore,
-				Verbosity:          verbosity,
-			})
-			if err == nil {
-				resp.Analysis = &heartbeatAnalysisJSON{
-					ShouldAct:          analysisResult.ShouldAct,
-					ActionBrief:        analysisResult.ActionBrief,
-					RecommendedActions: analysisResult.RecommendedActions,
-					Urgency:            analysisResult.Urgency,
-					Reasoning:          analysisResult.Reasoning,
-					Autonomy:           analysisResult.Autonomy,
-					UserFacing:         analysisResult.UserFacing,
-					Evidence:           analysisResult.Evidence,
-					LinkedEntities:     analysisResult.LinkedEntities,
-				}
-				// LLM can only suppress should_act (gate), never promote it
-				if resp.ShouldAct && !analysisResult.ShouldAct {
-					resp.ShouldAct = false
-					resp.DecisionReason = "suppress_llm"
-				}
-
-				// Attach developer trace for detailed/debug verbosity
-				if analysisResult.DeveloperTrace != nil {
-					resp.DeveloperTrace = &developerTraceJSON{
-						SignalFingerprint:    analysisResult.DeveloperTrace.SignalFingerprint,
-						SignalClassification: analysisResult.DeveloperTrace.SignalClassification,
-						DecisionReason:       analysisResult.DeveloperTrace.DecisionReason,
-						CooldownState:        analysisResult.DeveloperTrace.CooldownState,
-						ConfluenceScore:      analysisResult.DeveloperTrace.ConfluenceScore,
-						ConfluenceThreshold:  analysisResult.DeveloperTrace.ConfluenceThreshold,
-						ResponseRate:         analysisResult.DeveloperTrace.ResponseRate,
-						TimePeriod:           analysisResult.DeveloperTrace.TimePeriod,
-						EscalationLevel:      analysisResult.DeveloperTrace.EscalationLevel,
-						MemoryVelocity:       analysisResult.DeveloperTrace.MemoryVelocity,
-						LLMLatencyMs:         analysisResult.DeveloperTrace.LLMLatencyMs,
-						RawPrompt:            analysisResult.DeveloperTrace.RawPrompt,
-					}
-				}
-			}
-			// LLM failure is non-fatal — raw signals still returned
 		}
 	}
 

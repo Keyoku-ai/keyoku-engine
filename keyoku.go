@@ -257,6 +257,11 @@ func (k *Keyoku) Provider() llm.Provider {
 	return k.provider
 }
 
+// SetProvider sets the LLM provider. Used by tests and custom integrations.
+func (k *Keyoku) SetProvider(provider llm.Provider) {
+	k.provider = provider
+}
+
 // Store returns the underlying storage backend.
 func (k *Keyoku) Store() storage.Store {
 	return k.store
