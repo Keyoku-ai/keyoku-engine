@@ -69,6 +69,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 		if p.NudgeMaxInterval > 0 {
 			params.NudgeMaxInterval = p.NudgeMaxInterval
 		}
+		if p.TopicDedupWindow > 0 {
+			params.TopicDedupWindow = p.TopicDedupWindow
+		}
 	}
 
 	// 0. First-contact mode — very few memories means this is a new user
@@ -200,7 +203,7 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 	result.HighestUrgencyTier = highestTier
 
 	// 5. Confluence scoring — multiple weak signals can combine
-	confluenceWeight, meetsConfluence := calculateSignalConfluence(activeSignals, autonomy)
+	confluenceWeight, meetsConfluence := calculateSignalConfluence(activeSignals, autonomy, result)
 	result.ConfluenceScore = confluenceWeight
 
 	// 6. Fingerprint
@@ -274,21 +277,35 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 			return
 		}
 		// Stale escape: same signals, but enough time has passed.
-		// Fall through to nudge path with rotated content instead of blocking forever.
-		if !inConversation {
+		// Outside a conversation, real signals re-enter the normal act finalization path.
+		// No real signals still use nudge. In conversation we continue to suppress.
+		if inConversation {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_stale"
+			return
+		}
+		realSignals := k.classifyActiveSignals(result)
+		if len(realSignals) > 0 {
+			result.ShouldAct = true
+			result.DecisionReason = "act_stale_escalated"
+			result.EscalationLevel++
+		} else {
 			k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
 			return
 		}
-		result.ShouldAct = false
-		result.DecisionReason = "suppress_stale"
-		return
 	}
 
-	// 13. Topic entity dedup
+	// 13. Topic entity dedup — compares entities AND fingerprint.
+	// Same project + different work (fingerprint changed) = allowed through.
 	topicEntities := k.extractTopicEntities(ctx, result)
 	result.TopicEntities = topicEntities
 	currentSummaryHash := hashSignalSummary(result.Summary)
-	if k.shouldSuppressTopicRepeat(ctx, entityID, agentID, topicEntities, currentSummaryHash) {
+	// Use TopicDedupWindow if set, otherwise fall back to SignalCooldownNormal
+	dedupWindow := params.TopicDedupWindow
+	if dedupWindow == 0 {
+		dedupWindow = params.SignalCooldownNormal
+	}
+	if k.shouldSuppressTopicRepeat(ctx, entityID, agentID, topicEntities, currentSummaryHash, fingerprint, dedupWindow) {
 		result.ShouldAct = false
 		result.DecisionReason = "suppress_topic_repeat"
 		k.recordDecision(ctx, entityID, agentID, "signal", fingerprint, "suppress_topic_repeat", highestTier, totalSignals)
@@ -297,7 +314,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 
 	// 14. Passed all checks — act
 	result.ShouldAct = true
-	result.DecisionReason = "act"
+	if result.DecisionReason == "" {
+		result.DecisionReason = "act"
+	}
 	k.finalizeAct(ctx, entityID, agentID, cfg, result, highestTier)
 }
 
@@ -361,10 +380,10 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 	active := make(map[HeartbeatCheckType]string)
 
 	if len(result.Scheduled) > 0 {
-		active[CheckScheduled] = signalTierMap[CheckScheduled]
+		active[CheckScheduled] = adjustTierByTags(signalTierMap[CheckScheduled], result.Scheduled)
 	}
 	if len(result.Deadlines) > 0 {
-		active[CheckDeadlines] = signalTierMap[CheckDeadlines]
+		active[CheckDeadlines] = adjustTierByTags(signalTierMap[CheckDeadlines], result.Deadlines)
 	}
 	if len(result.Conflicts) > 0 {
 		active[CheckConflicts] = signalTierMap[CheckConflicts]
@@ -373,10 +392,10 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 		active[CheckContinuity] = signalTierMap[CheckContinuity]
 	}
 	if len(result.StaleMonitors) > 0 {
-		active[CheckStale] = signalTierMap[CheckStale]
+		active[CheckStale] = adjustTierByTags(signalTierMap[CheckStale], result.StaleMonitors)
 	}
 	if len(result.PendingWork) > 0 {
-		active[CheckPendingWork] = signalTierMap[CheckPendingWork]
+		active[CheckPendingWork] = adjustTierByTags(signalTierMap[CheckPendingWork], result.PendingWork)
 	}
 	if len(result.GoalProgress) > 0 {
 		active[CheckGoalProgress] = signalTierMap[CheckGoalProgress]
@@ -385,7 +404,7 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 		active[CheckKnowledge] = signalTierMap[CheckKnowledge]
 	}
 	if len(result.Decaying) > 0 {
-		active[CheckDecaying] = signalTierMap[CheckDecaying]
+		active[CheckDecaying] = adjustTierByTags(signalTierMap[CheckDecaying], result.Decaying)
 	}
 	if result.Sentiment != nil {
 		active[CheckSentiment] = signalTierMap[CheckSentiment]
@@ -404,6 +423,54 @@ func (k *Keyoku) classifyActiveSignals(result *HeartbeatResult) map[HeartbeatChe
 	}
 
 	return active
+}
+
+// adjustTierByTags scans memories for tag-based tier modifiers.
+// "critical"/"urgent" → boost one tier, "low-priority"/"backlog" → demote one tier.
+// The strongest modifier across all memories wins.
+func adjustTierByTags(baseTier string, memories []*Memory) string {
+	delta := 0
+	for _, m := range memories {
+		for _, tag := range m.Tags {
+			switch tag {
+			case "critical", "urgent":
+				if delta < 1 {
+					delta = 1 // boost
+				}
+			case "low-priority", "backlog":
+				if delta > -1 {
+					delta = -1 // demote
+				}
+			}
+		}
+		if delta > 0 {
+			break // boost wins, no need to check more
+		}
+	}
+	if delta == 0 {
+		return baseTier
+	}
+	return shiftTier(baseTier, delta)
+}
+
+// shiftTier moves a tier up (positive delta) or down (negative delta), clamped to valid tiers.
+func shiftTier(tier string, delta int) string {
+	tiers := []string{TierLow, TierNormal, TierElevated, TierImmediate}
+	idx := 0
+	for i, t := range tiers {
+		if t == tier {
+			idx = i
+			break
+		}
+	}
+	idx += delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(tiers) {
+		idx = len(tiers) - 1
+	}
+	return tiers[idx]
 }
 
 // computeSignalFingerprint creates a SHA256 hash of the current signal state.
@@ -485,15 +552,17 @@ func (k *Keyoku) calculateResponseRate(ctx context.Context, entityID, agentID st
 }
 
 // responseCooldownMultiplier returns a multiplier for cooldowns based on response rate.
-// Low response rates dramatically increase cooldowns to avoid annoying users.
+// Uses linear interpolation: rate 0 → 10x, rate 0.5 → 1x, rate 0.5+ → 1x.
+// This avoids the cliff edges of a step function.
 func responseCooldownMultiplier(rate float64) float64 {
-	if rate < 0.1 {
+	if rate >= 0.5 {
+		return 1.0
+	}
+	if rate <= 0 {
 		return 10.0
 	}
-	if rate < 0.3 {
-		return 3.0
-	}
-	return 1.0
+	// Linear interpolation: 10x at 0, 1x at 0.5
+	return 10.0 - (rate/0.5)*9.0
 }
 
 // checkResponseTracking checks unchecked heartbeat actions and marks whether the user responded.
@@ -524,16 +593,58 @@ func (k *Keyoku) checkResponseTracking(ctx context.Context, entityID string) {
 }
 
 // calculateSignalConfluence computes the total signal weight and whether it meets the threshold.
-func calculateSignalConfluence(activeSignals map[HeartbeatCheckType]string, autonomy string) (int, bool) {
+// When a HeartbeatResult is provided, stability of the underlying memories modulates weights:
+// each signal's weight is scaled by (0.5 + avgStability), so high-stability signals carry more weight.
+func calculateSignalConfluence(activeSignals map[HeartbeatCheckType]string, autonomy string, result ...*HeartbeatResult) (int, bool) {
+	var r *HeartbeatResult
+	if len(result) > 0 {
+		r = result[0]
+	}
+
 	totalWeight := 0
-	for _, tier := range activeSignals {
-		totalWeight += tierWeight[tier]
+	for checkType, tier := range activeSignals {
+		base := tierWeight[tier]
+		if r != nil {
+			avgStab := avgStabilityForCheck(r, checkType)
+			scaled := float64(base) * (0.5 + avgStab)
+			totalWeight += int(scaled + 0.5) // round
+		} else {
+			totalWeight += base
+		}
 	}
 	threshold, ok := confluenceThreshold[autonomy]
 	if !ok {
 		threshold = 12
 	}
 	return totalWeight, totalWeight >= threshold
+}
+
+// avgStabilityForCheck returns the average stability of memories in a given signal category.
+// Returns 0.5 (neutral) if no memories are available.
+func avgStabilityForCheck(r *HeartbeatResult, checkType HeartbeatCheckType) float64 {
+	var memories []*Memory
+	switch checkType {
+	case CheckPendingWork:
+		memories = r.PendingWork
+	case CheckDeadlines:
+		memories = r.Deadlines
+	case CheckScheduled:
+		memories = r.Scheduled
+	case CheckDecaying:
+		memories = r.Decaying
+	case CheckStale:
+		memories = r.StaleMonitors
+	default:
+		return 0.5 // neutral for categories without direct memory lists
+	}
+	if len(memories) == 0 {
+		return 0.5
+	}
+	sum := 0.0
+	for _, m := range memories {
+		sum += m.Stability
+	}
+	return sum / float64(len(memories))
 }
 
 // collectAllMemoryIDs gathers memory IDs from all signal categories in a HeartbeatResult.
@@ -848,9 +959,6 @@ func tierToUrgency(tier string) string {
 }
 
 // runEnhancedLLMAnalysis gathers conversation context and runs the full
-// AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
-// topics already discussed in conversation. Falls back to basic prioritization
-// if the LLM call fails.
 // AnalyzeHeartbeatContext LLM call, which is context-aware and suppresses
 // topics already discussed in conversation. Falls back to basic prioritization
 // if the LLM call fails.

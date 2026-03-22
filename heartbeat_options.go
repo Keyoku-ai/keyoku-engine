@@ -71,6 +71,18 @@ func WithVirtualNow(t time.Time) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.virtualNow = t }
 }
 
+// WithSignalsOnly skips the evaluateShouldAct decision pipeline and forces ShouldAct=true.
+// Used when the watcher already decided to act and the delivery path just needs fresh signals
+// without re-running cooldown/novelty/topic-dedup checks that would suppress.
+func WithSignalsOnly(signalsOnly bool) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.signalsOnly = signalsOnly }
+}
+
+// WithMinConfidence sets the minimum confidence for memories to be included in signals (default: 0.5).
+func WithMinConfidence(f float64) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.minConfidence = f }
+}
+
 func WithLLMPrioritization(provider llm.Provider, agentContext, entityContext string) HeartbeatOption {
 	return func(c *heartbeatConfig) {
 		c.llmProvider = provider

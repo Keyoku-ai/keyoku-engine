@@ -321,9 +321,16 @@ func collectSignalMemoryIDs(result *HeartbeatResult) []string {
 
 // shouldSuppressTopicRepeat checks for topic repetition using two layers:
 // Layer 1: Content hash — exact same summary text = suppress (precise, no false positives)
-// Layer 2: Entity overlap 85% within 1h window (fallback for rephrased content about same topic)
-func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string, currentSummaryHash string) bool {
-	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, 1*time.Hour)
+// Layer 2: Entity overlap 85% within dedup window (configurable, default 1h) — but ONLY if the
+//          signal fingerprint also matches. This prevents "same project, different work"
+//          from being suppressed. Same entities + different fingerprint = new work on same
+//          project = allow through.
+func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string, currentSummaryHash string, currentFingerprint string, dedupWindow ...time.Duration) bool {
+	window := 1 * time.Hour
+	if len(dedupWindow) > 0 && dedupWindow[0] > 0 {
+		window = dedupWindow[0]
+	}
+	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, window)
 	if err != nil || len(recentActs) == 0 {
 		return false
 	}
@@ -337,7 +344,8 @@ func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentI
 		}
 	}
 
-	// Layer 2: Entity overlap (fallback)
+	// Layer 2: Entity overlap (fallback) — only suppresses when fingerprint also matches.
+	// If the fingerprint changed, the underlying work is different even if the project is the same.
 	if len(currentEntities) == 0 {
 		return false
 	}
@@ -351,13 +359,17 @@ func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentI
 		if len(act.TopicEntities) == 0 {
 			continue
 		}
+		// Different fingerprint = different work, even if same entities. Allow through.
+		if currentFingerprint != "" && act.SignalFingerprint != "" && act.SignalFingerprint != currentFingerprint {
+			continue
+		}
 		overlap := 0
 		for _, id := range act.TopicEntities {
 			if currentSet[id] {
 				overlap++
 			}
 		}
-		// 85% overlap = basically the same exact topic, not just same project
+		// 85% overlap + same fingerprint = truly the same topic repeating
 		if float64(overlap)/float64(len(currentEntities)) > 0.85 {
 			return true
 		}

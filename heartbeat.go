@@ -145,6 +145,7 @@ type HeartbeatParams struct {
 	NudgeAfterSilence      time.Duration // 0 = disabled
 	MaxNudgesPerDay        int           // safety cap per 24h
 	NudgeMaxInterval       time.Duration // cap for backoff decay (e.g. 48h)
+	TopicDedupWindow       time.Duration // lookback for topic dedup (0 = use SignalCooldownNormal)
 }
 
 // DefaultHeartbeatParams returns defaults based on autonomy level.
@@ -262,6 +263,13 @@ type heartbeatConfig struct {
 	// Conversation awareness
 	inConversation bool // Plugin signals that user is actively talking
 
+	// Signals-only mode: skip evaluateShouldAct, return signals without decision.
+	// Used when watcher already decided to act and delivery path just needs fresh signals.
+	signalsOnly bool
+
+	// Confidence gating: memories below this threshold are excluded from signals.
+	minConfidence float64 // default: 0.5
+
 	// Virtual time override (for demo recording)
 	virtualNow time.Time // When non-zero, replaces time.Now() for all signal computation
 }
@@ -291,6 +299,7 @@ var allChecks = []HeartbeatCheckType{
 	CheckDecaying, CheckConflicts, CheckStale,
 	CheckGoalProgress, CheckContinuity, CheckSentiment,
 	CheckRelationship, CheckKnowledge, CheckPatterns,
+	CheckPositiveDeltas, CheckMemoryVelocity,
 }
 
 // HeartbeatCheck performs a zero-token local query against SQLite.
@@ -301,6 +310,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		decayThreshold:  0.4,
 		importanceFloor: 0.4,
 		maxResults:      20,
+		minConfidence:   0.5,
 		checks:          allChecks,
 	}
 	for _, opt := range opts {
@@ -358,8 +368,17 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Descending: true,
 		}))
 		if err == nil {
+			stalePlanCutoff := now.Add(-7 * 24 * time.Hour)   // 7 days
+			deadlineHorizon := now.Add(14 * 24 * time.Hour)   // 14 days
 			for _, m := range pending {
-				if m.Importance >= cfg.importanceFloor {
+				if m.Importance < cfg.importanceFloor {
+					continue
+				}
+				// Recency gate: only include if updated within 7 days OR has deadline within 14 days
+				// Zero UpdatedAt = not set, treat as recent
+				recentEnough := m.UpdatedAt.IsZero() || m.UpdatedAt.After(stalePlanCutoff)
+				hasUpcomingDeadline := m.ExpiresAt != nil && m.ExpiresAt.After(now) && m.ExpiresAt.Before(deadlineHorizon)
+				if recentEnough || hasUpcomingDeadline {
 					result.PendingWork = append(result.PendingWork, m)
 				}
 			}
@@ -799,12 +818,20 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		result.Patterns = k.detectBehavioralPatterns(ctx, entityID)
 	}
 
+	// 12b. CONFIDENCE GATING — filter out low-confidence memories from signal categories
+	if cfg.minConfidence > 0 {
+		result.PendingWork = filterByConfidence(result.PendingWork, cfg.minConfidence)
+		result.Deadlines = filterByConfidence(result.Deadlines, cfg.minConfidence)
+		result.Decaying = filterByConfidence(result.Decaying, cfg.minConfidence)
+		result.StaleMonitors = filterByConfidence(result.StaleMonitors, cfg.minConfidence)
+	}
+
 	// 13. SURFACED MEMORY FILTER — remove signals that were already surfaced recently.
 	// This prevents the AI from covering the same topics with different wording.
 	// Scheduled signals are exempt (cron tasks that are due must fire regardless).
 	// Deadlines use soft filter (always keep at least one reminder).
 	// PendingWork/StaleMonitors/Decaying use strict filter (go quiet if already covered).
-	{
+	if !cfg.signalsOnly {
 		agentIDForFilter := cfg.agentID
 		if agentIDForFilter == "" {
 			agentIDForFilter = "default"
@@ -827,25 +854,29 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		memCount = 0
 	}
 
-	// Detect positive deltas before decision (so they can trigger action)
-	snapshot := buildStateSnapshot(result)
-	snapshot.MemoryCount = memCount
-	snapshot.MemoryCountAt = now
-	agentIDForDelta := cfg.agentID
-	if agentIDForDelta == "" {
-		agentIDForDelta = "default"
-	}
-	lastAct, deltaErr := k.store.GetLastHeartbeatAction(ctx, entityID, agentIDForDelta, "act")
-	if deltaErr == nil && lastAct != nil && lastAct.StateSnapshot != "" {
-		var prevSnapshot StateSnapshot
-		if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
-			result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
+	// Detect positive deltas and memory velocity (gated by check types)
+	if checksToRun[CheckPositiveDeltas] || checksToRun[CheckMemoryVelocity] {
+		snapshot := buildStateSnapshot(result)
+		snapshot.MemoryCount = memCount
+		snapshot.MemoryCountAt = now
+		agentIDForDelta := cfg.agentID
+		if agentIDForDelta == "" {
+			agentIDForDelta = "default"
+		}
+		lastAct, deltaErr := k.store.GetLastHeartbeatAction(ctx, entityID, agentIDForDelta, "act")
+		if deltaErr == nil && lastAct != nil && lastAct.StateSnapshot != "" {
+			var prevSnapshot StateSnapshot
+			if json.Unmarshal([]byte(lastAct.StateSnapshot), &prevSnapshot) == nil {
+				if checksToRun[CheckPositiveDeltas] {
+					result.PositiveDeltas = detectDeltas(snapshot, prevSnapshot)
+				}
 
-			// Memory velocity: how many new memories since last act
-			if prevSnapshot.MemoryCount > 0 {
-				result.MemoryVelocity = memCount - prevSnapshot.MemoryCount
-				if result.MemoryVelocity >= 5 {
-					result.MemoryVelocityHigh = true
+				// Memory velocity: how many new memories since last act
+				if checksToRun[CheckMemoryVelocity] && prevSnapshot.MemoryCount > 0 {
+					result.MemoryVelocity = memCount - prevSnapshot.MemoryCount
+					if result.MemoryVelocity >= 5 {
+						result.MemoryVelocityHigh = true
+					}
 				}
 			}
 		}
@@ -854,10 +885,41 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	// Build summary regardless of decision (used by LLM analysis if enabled)
 	result.Summary = buildSummary(result)
 
-	// Intelligent ShouldAct evaluation — replaces naive OR
-	k.evaluateShouldAct(ctx, entityID, cfg, result)
+	if cfg.signalsOnly {
+		// Signals-only mode: watcher already decided to act.
+		// Return fresh signals without re-running the decision pipeline.
+		result.ShouldAct = true
+		result.InConversation = cfg.inConversation
+		result.DecisionReason = "signals_only"
+		activeSignals := k.classifyActiveSignals(result)
+		for _, tier := range activeSignals {
+			if result.HighestUrgencyTier == "" || tierPriority[tier] < tierPriority[result.HighestUrgencyTier] {
+				result.HighestUrgencyTier = tier
+			}
+		}
+		result.TimePeriod = k.currentTimePeriodAt(now)
+		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
+	} else {
+		// Intelligent ShouldAct evaluation — replaces naive OR
+		k.evaluateShouldAct(ctx, entityID, cfg, result)
+	}
 
 	return result, nil
+}
+
+// filterByConfidence removes memories with confidence below the threshold.
+// Memories with confidence == 0 are treated as "not set" and pass through.
+func filterByConfidence(memories []*Memory, minConfidence float64) []*Memory {
+	if minConfidence <= 0 {
+		return memories
+	}
+	var filtered []*Memory
+	for _, m := range memories {
+		if m.Confidence == 0 || m.Confidence >= minConfidence {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
 }
 
 // --- helpers ---

@@ -147,6 +147,9 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	if req.InConversation {
 		hbOpts = append(hbOpts, keyoku.WithInConversation(true))
 	}
+	if req.SignalsOnly {
+		hbOpts = append(hbOpts, keyoku.WithSignalsOnly(true))
+	}
 	if req.VirtualNow != "" {
 		if t, err := time.Parse(time.RFC3339, req.VirtualNow); err == nil {
 			hbOpts = append(hbOpts, keyoku.WithVirtualNow(t))
