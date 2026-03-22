@@ -831,7 +831,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 	// Scheduled signals are exempt (cron tasks that are due must fire regardless).
 	// Deadlines use soft filter (always keep at least one reminder).
 	// PendingWork/StaleMonitors/Decaying use strict filter (go quiet if already covered).
-	{
+	if !cfg.signalsOnly {
 		agentIDForFilter := cfg.agentID
 		if agentIDForFilter == "" {
 			agentIDForFilter = "default"
@@ -889,6 +889,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 		// Signals-only mode: watcher already decided to act.
 		// Return fresh signals without re-running the decision pipeline.
 		result.ShouldAct = true
+		result.InConversation = cfg.inConversation
 		result.DecisionReason = "signals_only"
 		activeSignals := k.classifyActiveSignals(result)
 		for _, tier := range activeSignals {

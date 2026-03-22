@@ -1260,6 +1260,72 @@ func TestSignalsOnly_NoSignals_StillReturnsTrue(t *testing.T) {
 	}
 }
 
+func TestSignalsOnly_PropagatesInConversation(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+	}
+	k := &Keyoku{
+		store:              store,
+		eventBus:           NewEventBus(false),
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithSignalsOnly(true), WithInConversation(true))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !result.InConversation {
+		t.Error("signals_only should propagate inConversation to result")
+	}
+}
+
+func TestSignalsOnly_SkipsSurfacedMemoryFilter(t *testing.T) {
+	now := time.Now()
+	store := &surfacedStore{
+		testStore: testStore{
+			queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+				if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+					return []*storage.Memory{
+						{
+							ID:         "mem-1",
+							Content:    "Deploy v3",
+							Type:       storage.TypePlan,
+							Importance: 0.8,
+							State:      storage.StateActive,
+							CreatedAt:  now,
+							UpdatedAt:  now,
+						},
+					}, nil
+				}
+				return nil, nil
+			},
+		},
+		surfacedIDs: []string{"mem-1"},
+	}
+	k := &Keyoku{
+		store:              store,
+		eventBus:           NewEventBus(false),
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork), WithSignalsOnly(true))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.PendingWork) != 1 {
+		t.Fatalf("signals_only should keep surfaced pending work, got %d", len(result.PendingWork))
+	}
+	if result.PendingWork[0].ID != "mem-1" {
+		t.Errorf("pending work ID = %q, want mem-1", result.PendingWork[0].ID)
+	}
+}
+
 // --- Issue 2: allChecks contains CheckPositiveDeltas and CheckMemoryVelocity ---
 
 func TestAllChecks_ContainsPositiveDeltasAndVelocity(t *testing.T) {

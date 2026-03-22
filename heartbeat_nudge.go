@@ -321,9 +321,10 @@ func collectSignalMemoryIDs(result *HeartbeatResult) []string {
 
 // shouldSuppressTopicRepeat checks for topic repetition using two layers:
 // Layer 1: Content hash — exact same summary text = suppress (precise, no false positives)
-// Layer 2: Entity overlap 85% within 1h window — but ONLY if the signal fingerprint
-//          also matches. This prevents "same project, different work" from being suppressed.
-//          Same entities + different fingerprint = new work on same project = allow through.
+// Layer 2: Entity overlap 85% within dedup window (configurable, default 1h) — but ONLY if the
+//          signal fingerprint also matches. This prevents "same project, different work"
+//          from being suppressed. Same entities + different fingerprint = new work on same
+//          project = allow through.
 func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string, currentSummaryHash string, currentFingerprint string, dedupWindow ...time.Duration) bool {
 	window := 1 * time.Hour
 	if len(dedupWindow) > 0 && dedupWindow[0] > 0 {
