@@ -1658,3 +1658,196 @@ func TestShiftTier(t *testing.T) {
 		}
 	}
 }
+
+// --- Stale Signal Suppression Tests ---
+
+func TestGoalProgressFilter_ExpiredPlanFiltered(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(-24 * time.Hour)
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-expired",
+			Content:    "Submit launch checklist",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+			ExpiresAt:  &expiresAt,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Worked on launch checklist",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.allGoalProgress) != 1 {
+		t.Fatalf("allGoalProgress count = %d, want 1", len(result.allGoalProgress))
+	}
+	if result.allGoalProgress[0].Status != "stalled" {
+		t.Errorf("expired plan status = %q, want stalled before filtering", result.allGoalProgress[0].Status)
+	}
+	if len(result.GoalProgress) != 0 {
+		t.Fatalf("GoalProgress count = %d, want 0 for expired stale goal", len(result.GoalProgress))
+	}
+}
+
+func TestGoalProgressFilter_FutureExpiryPlanKept(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(7 * 24 * time.Hour)
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-future",
+			Content:    "Ship onboarding update",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+			ExpiresAt:  &expiresAt,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Outlined onboarding changes",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.GoalProgress) != 1 {
+		t.Fatalf("GoalProgress count = %d, want 1", len(result.GoalProgress))
+	}
+	if result.GoalProgress[0].Plan.ID != "plan-future" {
+		t.Errorf("GoalProgress plan ID = %q, want plan-future", result.GoalProgress[0].Plan.ID)
+	}
+	if result.GoalProgress[0].Status != "at_risk" {
+		t.Errorf("future-expiry status = %q, want at_risk", result.GoalProgress[0].Status)
+	}
+}
+
+func TestGoalProgressFilter_NoExpiryPlanNotMisclassified(t *testing.T) {
+	now := time.Now().UTC()
+	result, err := runGoalProgressCheck(t, now,
+		&storage.Memory{
+			ID:         "plan-no-expiry",
+			Content:    "Refactor heartbeat prompts",
+			Type:       storage.TypePlan,
+			Importance: 0.9,
+			State:      storage.StateActive,
+		},
+		&storage.Memory{
+			ID:        "activity-old",
+			Content:   "Started prompt refactor",
+			Type:      storage.TypeActivity,
+			State:     storage.StateActive,
+			CreatedAt: now.Add(-10 * 24 * time.Hour),
+		},
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if len(result.GoalProgress) != 1 {
+		t.Fatalf("GoalProgress count = %d, want 1", len(result.GoalProgress))
+	}
+	if result.GoalProgress[0].Plan.ID != "plan-no-expiry" {
+		t.Errorf("GoalProgress plan ID = %q, want plan-no-expiry", result.GoalProgress[0].Plan.ID)
+	}
+	if result.GoalProgress[0].Status != "stalled" {
+		t.Errorf("no-expiry status = %q, want stalled", result.GoalProgress[0].Status)
+	}
+	if result.GoalProgress[0].DaysLeft != -1 {
+		t.Errorf("DaysLeft = %v, want -1 sentinel", result.GoalProgress[0].DaysLeft)
+	}
+}
+
+func runGoalProgressCheck(t *testing.T, now time.Time, plan *storage.Memory, activity *storage.Memory) (*HeartbeatResult, error) {
+	t.Helper()
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{plan}, nil
+			}
+			return nil, nil
+		},
+		findSimilarFn: func(_ context.Context, embedding []float32, entityID string, limit int, minScore float64) ([]*storage.SimilarityResult, error) {
+			return []*storage.SimilarityResult{
+				{Memory: activity, Similarity: 0.9},
+			}, nil
+		},
+	}
+
+	k := &Keyoku{
+		store: store,
+		emb:   &goalProgressTestEmbedder{},
+	}
+
+	return k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckGoalProgress),
+		WithVirtualNow(now))
+}
+
+type goalProgressTestEmbedder struct{}
+
+func (e *goalProgressTestEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	return []float32{1, 0, 0}, nil
+}
+
+func (e *goalProgressTestEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = []float32{1, 0, 0}
+	}
+	return result, nil
+}
+
+func (e *goalProgressTestEmbedder) Dimensions() int {
+	return 3
+}
+
+func TestEvaluateShouldAct_LowTierOnly_NoConfluence(t *testing.T) {
+	// Low-tier-only signals (e.g., patterns) without confluence should NOT trigger act
+	store := &testStore{}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+
+	result := &HeartbeatResult{
+		Patterns: []BehavioralPattern{
+			{Description: "User usually asks about Go on Mondays", Confidence: 0.7},
+		},
+	}
+	cfg := &heartbeatConfig{
+		autonomy: "act",
+	}
+	k.evaluateShouldAct(context.Background(), "entity-1", cfg, result)
+
+	if result.ShouldAct {
+		t.Errorf("low-tier-only signals should not trigger act, got ShouldAct=true, reason=%s", result.DecisionReason)
+	}
+	if result.DecisionReason != "suppress_low_no_confluence" {
+		t.Errorf("DecisionReason = %q, want suppress_low_no_confluence", result.DecisionReason)
+	}
+}
+
+func TestEvaluateShouldAct_NormalTier_PassesThrough(t *testing.T) {
+	// Normal-tier signals (e.g., pending_work) should pass through to act
+	store := &testStore{}
+	k := nudgeTestKeyoku(store, PeriodWorking)
+
+	result := &HeartbeatResult{
+		PendingWork: []*Memory{
+			{ID: "task-1", Content: "Review PR #42", Importance: 0.8},
+		},
+	}
+	cfg := &heartbeatConfig{
+		autonomy: "act",
+	}
+	k.evaluateShouldAct(context.Background(), "entity-1", cfg, result)
+
+	if !result.ShouldAct {
+		t.Errorf("normal-tier signals should trigger act, got ShouldAct=false, reason=%s", result.DecisionReason)
+	}
+}
