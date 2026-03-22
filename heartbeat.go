@@ -270,6 +270,9 @@ type heartbeatConfig struct {
 	// Confidence gating: memories below this threshold are excluded from signals.
 	minConfidence float64 // default: 0.5
 
+	// Verbosity control for LLM analysis
+	verbosity llm.HeartbeatVerbosity
+
 	// Virtual time override (for demo recording)
 	virtualNow time.Time // When non-zero, replaces time.Now() for all signal computation
 }

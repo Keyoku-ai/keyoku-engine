@@ -9,6 +9,7 @@ import (
 	"time"
 
 	keyoku "github.com/keyoku-ai/keyoku-engine"
+	"github.com/keyoku-ai/keyoku-engine/llm"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
 
@@ -149,6 +150,9 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 	}
 	if req.SignalsOnly {
 		hbOpts = append(hbOpts, keyoku.WithSignalsOnly(true))
+	}
+	if req.Verbosity != "" {
+		hbOpts = append(hbOpts, keyoku.WithVerbosity(req.Verbosity))
 	}
 	if req.VirtualNow != "" {
 		if t, err := time.Parse(time.RFC3339, req.VirtualNow); err == nil {
@@ -404,6 +408,8 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				deltaStrs = append(deltaStrs, fmt.Sprintf("[%s] %s", d.Type, d.Description))
 			}
 
+			verbosity := llm.ParseVerbosity(req.Verbosity)
+
 			analysisResult, err := provider.AnalyzeHeartbeatContext(r.Context(), keyoku.HeartbeatAnalysisRequest{
 				ActivitySummary:    activitySummary,
 				Scheduled:          scheduled,
@@ -428,6 +434,7 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 				MemoryVelocity:     hbResult.MemoryVelocity,
 				SignalUrgencyTier:  hbResult.HighestUrgencyTier,
 				SignalCount:        hbResult.ConfluenceScore,
+				Verbosity:          verbosity,
 			})
 			if err == nil {
 				resp.Analysis = &heartbeatAnalysisJSON{
@@ -438,11 +445,31 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 					Reasoning:          analysisResult.Reasoning,
 					Autonomy:           analysisResult.Autonomy,
 					UserFacing:         analysisResult.UserFacing,
+					Evidence:           analysisResult.Evidence,
+					LinkedEntities:     analysisResult.LinkedEntities,
 				}
 				// LLM can only suppress should_act (gate), never promote it
 				if resp.ShouldAct && !analysisResult.ShouldAct {
 					resp.ShouldAct = false
 					resp.DecisionReason = "suppress_llm"
+				}
+
+				// Attach developer trace for detailed/debug verbosity
+				if analysisResult.DeveloperTrace != nil {
+					resp.DeveloperTrace = &developerTraceJSON{
+						SignalFingerprint:    analysisResult.DeveloperTrace.SignalFingerprint,
+						SignalClassification: analysisResult.DeveloperTrace.SignalClassification,
+						DecisionReason:       analysisResult.DeveloperTrace.DecisionReason,
+						CooldownState:        analysisResult.DeveloperTrace.CooldownState,
+						ConfluenceScore:      analysisResult.DeveloperTrace.ConfluenceScore,
+						ConfluenceThreshold:  analysisResult.DeveloperTrace.ConfluenceThreshold,
+						ResponseRate:         analysisResult.DeveloperTrace.ResponseRate,
+						TimePeriod:           analysisResult.DeveloperTrace.TimePeriod,
+						EscalationLevel:      analysisResult.DeveloperTrace.EscalationLevel,
+						MemoryVelocity:       analysisResult.DeveloperTrace.MemoryVelocity,
+						LLMLatencyMs:         analysisResult.DeveloperTrace.LLMLatencyMs,
+						RawPrompt:            analysisResult.DeveloperTrace.RawPrompt,
+					}
 				}
 			}
 			// LLM failure is non-fatal — raw signals still returned

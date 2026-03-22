@@ -265,6 +265,26 @@ func HeartbeatAnalysisSchema() map[string]interface{} {
 	}
 }
 
+// HeartbeatAnalysisDetailedSchema extends HeartbeatAnalysisSchema with evidence/entity fields.
+// Used for detailed and debug verbosity levels.
+func HeartbeatAnalysisDetailedSchema() map[string]interface{} {
+	base := HeartbeatAnalysisSchema()
+	props := base["properties"].(map[string]interface{})
+	props["evidence"] = map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}
+	props["linked_entities"] = map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}
+	return base
+}
+
+// HeartbeatAnalysisSchemaForVerbosity returns the appropriate schema for the given verbosity.
+func HeartbeatAnalysisSchemaForVerbosity(v HeartbeatVerbosity) map[string]interface{} {
+	switch v {
+	case VerbosityDetailed, VerbosityDebug:
+		return HeartbeatAnalysisDetailedSchema()
+	default:
+		return HeartbeatAnalysisSchema()
+	}
+}
+
 // GraphSummarySchema is the schema for graph summary responses.
 func GraphSummarySchema() map[string]interface{} {
 	return map[string]interface{}{

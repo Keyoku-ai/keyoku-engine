@@ -317,6 +317,7 @@ func (o *OpenAIProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 
 func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
 	prompt := FormatHeartbeatAnalysisPrompt(req)
+	schema := HeartbeatAnalysisSchemaForVerbosity(req.Verbosity)
 	params := openai.ChatCompletionNewParams{
 		Model: openai.ChatModel(o.model),
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -327,7 +328,7 @@ func (o *OpenAIProvider) AnalyzeHeartbeatContext(ctx context.Context, req Heartb
 			OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
 				Name:   "heartbeat_analysis",
 				Strict: openai.Bool(true),
-				Schema: ForOpenAI(HeartbeatAnalysisSchema()),
+				Schema: ForOpenAI(schema),
 			}},
 		},
 	}

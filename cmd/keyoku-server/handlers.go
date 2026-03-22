@@ -142,6 +142,9 @@ type heartbeatContextRequest struct {
 	SignalCooldownNormal string `json:"signal_cooldown_normal,omitempty"` // e.g. "2h"
 	SignalCooldownLow    string `json:"signal_cooldown_low,omitempty"`    // e.g. "4h"
 
+	// Verbosity control
+	Verbosity string `json:"verbosity,omitempty"` // "conversational", "standard", "detailed", "debug" (default: "conversational")
+
 	// Virtual time override for demo recording
 	VirtualNow string `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
 }
@@ -154,6 +157,23 @@ type heartbeatAnalysisJSON struct {
 	Reasoning          string   `json:"reasoning"`
 	Autonomy           string   `json:"autonomy"`
 	UserFacing         string   `json:"user_facing"`
+	Evidence           []string `json:"evidence,omitempty"`
+	LinkedEntities     []string `json:"linked_entities,omitempty"`
+}
+
+type developerTraceJSON struct {
+	SignalFingerprint    string            `json:"signal_fingerprint"`
+	SignalClassification map[string]string `json:"signal_classification,omitempty"`
+	DecisionReason       string            `json:"decision_reason"`
+	CooldownState        string            `json:"cooldown_state,omitempty"`
+	ConfluenceScore      int               `json:"confluence_score"`
+	ConfluenceThreshold  int               `json:"confluence_threshold"`
+	ResponseRate         float64           `json:"response_rate"`
+	TimePeriod           string            `json:"time_period"`
+	EscalationLevel      int               `json:"escalation_level"`
+	MemoryVelocity       int               `json:"memory_velocity"`
+	LLMLatencyMs         int64             `json:"llm_latency_ms"`
+	RawPrompt            string            `json:"raw_prompt,omitempty"`
 }
 
 type goalProgressJSON struct {
@@ -244,6 +264,9 @@ type heartbeatContextResponse struct {
 	// v3: Memory velocity
 	MemoryVelocity     int  `json:"memory_velocity,omitempty"`
 	MemoryVelocityHigh bool `json:"memory_velocity_high,omitempty"`
+
+	// v5: Developer trace (debug/detailed verbosity only)
+	DeveloperTrace *developerTraceJSON `json:"developer_trace,omitempty"`
 }
 
 type watcherStartRequest struct {

@@ -321,9 +321,10 @@ func (g *GeminiProvider) PrioritizeActions(ctx context.Context, req ActionPriori
 }
 
 func (g *GeminiProvider) AnalyzeHeartbeatContext(ctx context.Context, req HeartbeatAnalysisRequest) (*HeartbeatAnalysisResponse, error) {
+	schema := HeartbeatAnalysisSchemaForVerbosity(req.Verbosity)
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
-		ResponseSchema:   ForGemini(HeartbeatAnalysisSchema()),
+		ResponseSchema:   ForGemini(schema),
 		Temperature:      genai.Ptr[float32](0.3),
 		TopP:             genai.Ptr[float32](0.8),
 	}

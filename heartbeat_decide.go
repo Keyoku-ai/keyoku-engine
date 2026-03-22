@@ -988,6 +988,11 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 	}
 
 	// Build the analysis request from the heartbeat result signals
+	verbosity := cfg.verbosity
+	if verbosity == "" {
+		verbosity = llm.VerbosityConversational
+	}
+
 	req := llm.HeartbeatAnalysisRequest{
 		ActivitySummary:     hctx.SignalSummary,
 		RelevantMemories:    relevantMemories,
@@ -1000,6 +1005,7 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 		MemoryVelocity:      result.MemoryVelocity,
 		SignalUrgencyTier:   result.HighestUrgencyTier,
 		SignalCount:         countSignals(result),
+		Verbosity:           verbosity,
 	}
 
 	// Populate signal lists
@@ -1030,7 +1036,9 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 	llmCtx, llmCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer llmCancel()
 
+	llmStart := time.Now()
 	resp, err := cfg.llmProvider.AnalyzeHeartbeatContext(llmCtx, req)
+	llmLatency := time.Since(llmStart)
 	if err != nil {
 		// Fall back to basic prioritization (uses programmatic urgency, no LLM)
 		result.Urgency = tierToUrgency(result.HighestUrgencyTier)
@@ -1041,6 +1049,35 @@ func (k *Keyoku) runEnhancedLLMAnalysis(ctx context.Context, entityID string, cf
 	result.PriorityAction = resp.ActionBrief
 	result.ActionItems = resp.RecommendedActions
 	result.EnhancedAnalysis = resp
+
+	// Populate DeveloperTrace for detailed/debug verbosity
+	if verbosity == llm.VerbosityDetailed || verbosity == llm.VerbosityDebug {
+		trace := &llm.DeveloperTrace{
+			SignalFingerprint:   result.SignalFingerprint,
+			DecisionReason:      result.DecisionReason,
+			ConfluenceScore:     result.ConfluenceScore,
+			ResponseRate:        result.ResponseRate,
+			TimePeriod:          result.TimePeriod,
+			EscalationLevel:     result.EscalationLevel,
+			MemoryVelocity:      result.MemoryVelocity,
+			LLMLatencyMs:        llmLatency.Milliseconds(),
+		}
+		// Build signal classification map
+		activeSignals := k.classifyActiveSignals(result)
+		if len(activeSignals) > 0 {
+			trace.SignalClassification = make(map[string]string, len(activeSignals))
+			for checkType, tier := range activeSignals {
+				trace.SignalClassification[string(checkType)] = tier
+			}
+		}
+		// Include raw prompt only at debug verbosity
+		if verbosity == llm.VerbosityDebug {
+			if rendered, renderErr := llm.RenderHeartbeatPrompt(req); renderErr == nil {
+				trace.RawPrompt = rendered
+			}
+		}
+		resp.DeveloperTrace = trace
+	}
 
 	// Normalize LLM urgency (canonical: none/low/medium/high/critical)
 	// to the legacy values expected by mapPriorityUrgency (e.g., immediate/soon/can_wait).

@@ -508,8 +508,19 @@ Return JSON with: should_act (bool), action_brief (string), recommended_actions 
 
 CRITICAL: Only surface real, concrete signals. If all signal sections above are empty or say "none", set should_act to false, urgency to "none", action_brief to "", recommended_actions to [], and user_facing to "". Do NOT fabricate generic suggestions like "check in about projects" or "review long-term goals" when there is no data to back them up. Empty signals = empty response. The agent will handle the "nothing to report" case itself.`
 
-// FormatHeartbeatAnalysisPrompt formats the heartbeat analysis prompt.
+// FormatHeartbeatAnalysisPrompt formats the heartbeat analysis prompt using verbosity-aware templates.
+// Falls back to the legacy fmt.Sprintf approach if template rendering fails.
 func FormatHeartbeatAnalysisPrompt(req HeartbeatAnalysisRequest) string {
+	rendered, err := RenderHeartbeatPrompt(req)
+	if err != nil {
+		return formatLegacyHeartbeatPrompt(req)
+	}
+	return rendered
+}
+
+// formatLegacyHeartbeatPrompt is the original fmt.Sprintf-based prompt formatter.
+// Kept as a fallback in case template rendering fails.
+func formatLegacyHeartbeatPrompt(req HeartbeatAnalysisRequest) string {
 	autonomy := req.Autonomy
 	if autonomy == "" {
 		autonomy = "suggest"
