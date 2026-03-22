@@ -277,22 +277,22 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 			return
 		}
 		// Stale escape: same signals, but enough time has passed.
-		// If real signals exist, re-act with escalated context instead of falling to nudge.
-		if !inConversation {
-			realSignals := k.classifyActiveSignals(result)
-			if len(realSignals) > 0 {
-				// Real signals exist — act with stale escalation instead of nudging
-				result.ShouldAct = true
-				result.DecisionReason = "act_stale_escalated"
-				result.EscalationLevel++
-				return
-			}
+		// Outside a conversation, real signals re-enter the normal act finalization path.
+		// No real signals still use nudge. In conversation we continue to suppress.
+		if inConversation {
+			result.ShouldAct = false
+			result.DecisionReason = "suppress_stale"
+			return
+		}
+		realSignals := k.classifyActiveSignals(result)
+		if len(realSignals) > 0 {
+			result.ShouldAct = true
+			result.DecisionReason = "act_stale_escalated"
+			result.EscalationLevel++
+		} else {
 			k.evaluateNudge(ctx, entityID, agentID, autonomy, params, result)
 			return
 		}
-		result.ShouldAct = false
-		result.DecisionReason = "suppress_stale"
-		return
 	}
 
 	// 13. Topic entity dedup — compares entities AND fingerprint.
@@ -314,7 +314,9 @@ func (k *Keyoku) evaluateShouldAct(ctx context.Context, entityID string, cfg *he
 
 	// 14. Passed all checks — act
 	result.ShouldAct = true
-	result.DecisionReason = "act"
+	if result.DecisionReason == "" {
+		result.DecisionReason = "act"
+	}
 	k.finalizeAct(ctx, entityID, agentID, cfg, result, highestTier)
 }
 

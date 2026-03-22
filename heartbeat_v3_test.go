@@ -1314,13 +1314,25 @@ func TestPositiveDeltas_GatedByCheckType(t *testing.T) {
 
 func TestStaleEscape_ReActsWithRealSignals(t *testing.T) {
 	now := time.Now()
+	pending := &Memory{
+		ID:         "plan-1",
+		Content:    "Build feature X",
+		Type:       storage.TypePlan,
+		Importance: 0.8,
+		State:      storage.StateActive,
+		Confidence: 0.9,
+		UpdatedAt:  now.Add(-1 * time.Hour),
+	}
+	expectedFingerprint := (&Keyoku{}).computeSignalFingerprint(&HeartbeatResult{
+		PendingWork: []*Memory{pending},
+	})
+	var recorded *storage.HeartbeatAction
+	nudgeEvaluated := false
 	store := &testStore{
 		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
 			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
 				return []*storage.Memory{
-					{ID: "plan-1", Content: "Build feature X", Type: storage.TypePlan,
-						Importance: 0.8, State: storage.StateActive, Confidence: 0.9,
-						UpdatedAt: now.Add(-1 * time.Hour)},
+					pending,
 				}, nil
 			}
 			return nil, nil
@@ -1328,16 +1340,30 @@ func TestStaleEscape_ReActsWithRealSignals(t *testing.T) {
 		getLastHeartbeatActionFn: func(_ context.Context, entityID, agentID, triggerCategory string) (*storage.HeartbeatAction, error) {
 			// Same fingerprint, but past 2x cooldown (stale escape territory)
 			return &storage.HeartbeatAction{
-				SignalFingerprint: "fp-abc",
+				SignalFingerprint: expectedFingerprint,
 				ActedAt:           now.Add(-5 * time.Hour), // well past 2x cooldown
 			}, nil
+		},
+		recordHeartbeatActionFn: func(_ context.Context, action *storage.HeartbeatAction) error {
+			recorded = action
+			return nil
+		},
+		getRecentSessionMessagesFn: func(_ context.Context, entityID string, limit int) ([]*storage.SessionMessage, error) {
+			return []*storage.SessionMessage{
+				{Role: "user", CreatedAt: now.Add(-5 * time.Hour)},
+			}, nil
+		},
+		getNudgeCountTodayFn: func(_ context.Context, entityID, agentID string) (int, error) {
+			nudgeEvaluated = true
+			return 0, nil
 		},
 	}
 
 	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default(), timePeriodOverride: PeriodWorking}
 
 	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
-		WithAutonomy("suggest"))
+		WithAutonomy("suggest"),
+		WithVirtualNow(now))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -1345,6 +1371,27 @@ func TestStaleEscape_ReActsWithRealSignals(t *testing.T) {
 	// With real signals (PendingWork), stale escape should act instead of nudge
 	if result.DecisionReason == "nudge" {
 		t.Error("stale escape with real signals should act, not nudge")
+	}
+	if result.DecisionReason == "suppress_stale" {
+		t.Fatal("stale escape with real signals should not be overwritten to suppress_stale")
+	}
+	if result.DecisionReason != "act_stale_escalated" {
+		t.Errorf("DecisionReason = %q, want %q", result.DecisionReason, "act_stale_escalated")
+	}
+	if !result.ShouldAct {
+		t.Error("ShouldAct = false, want true for stale escape with real signals")
+	}
+	if nudgeEvaluated {
+		t.Fatal("stale escape act path should not evaluate nudge flow")
+	}
+	if recorded == nil {
+		t.Fatal("expected stale escape act to be recorded")
+	}
+	if recorded.Decision != "act" {
+		t.Errorf("recorded.Decision = %q, want %q", recorded.Decision, "act")
+	}
+	if recorded.SignalFingerprint != expectedFingerprint {
+		t.Errorf("recorded.SignalFingerprint = %q, want %q", recorded.SignalFingerprint, expectedFingerprint)
 	}
 }
 
