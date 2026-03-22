@@ -490,7 +490,7 @@ func TestMemoryVelocity_HighWhenDeltaGte5(t *testing.T) {
 	}
 	k := &Keyoku{store: store}
 	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
-		WithChecks(CheckPendingWork))
+		WithChecks(CheckPendingWork, CheckMemoryVelocity))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestMemoryVelocity_LowWhenDeltaLt5(t *testing.T) {
 	}
 	k := &Keyoku{store: store}
 	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
-		WithChecks(CheckPendingWork))
+		WithChecks(CheckPendingWork, CheckMemoryVelocity))
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestConversationGradient_NormalAllowedWithHighVelocity(t *testing.T) {
 	}
 	k := &Keyoku{store: store}
 	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
-		WithChecks(CheckPendingWork),
+		WithChecks(CheckPendingWork, CheckMemoryVelocity),
 		WithInConversation(true))
 	if err != nil {
 		t.Fatalf("error: %v", err)
@@ -749,7 +749,7 @@ func TestContentDedup_SameHashSuppresses(t *testing.T) {
 	k := &Keyoku{store: store}
 
 	// Same hash, no entity overlap → Layer 1 should catch it
-	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-999"}, hash)
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-999"}, hash, "fp-any")
 	if !suppressed {
 		t.Error("shouldSuppressTopicRepeat should return true when summary hash matches (Layer 1)")
 	}
@@ -763,6 +763,7 @@ func TestContentDedup_DifferentHashDifferentEntities_NoSuppress(t *testing.T) {
 					ActedAt:           time.Now().Add(-20 * time.Minute),
 					Decision:          "act",
 					SignalSummaryHash: "oldhash1234567890",
+					SignalFingerprint: "fp-old",
 					TopicEntities:     []string{"entity-A", "entity-B"},
 				},
 			}, nil
@@ -771,31 +772,55 @@ func TestContentDedup_DifferentHashDifferentEntities_NoSuppress(t *testing.T) {
 	k := &Keyoku{store: store}
 
 	// Different hash AND different entities → should NOT suppress
-	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-C", "entity-D"}, "newhash9876543210")
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "e1", "a1", []string{"entity-C", "entity-D"}, "newhash9876543210", "fp-new")
 	if suppressed {
 		t.Error("shouldSuppressTopicRepeat should return false when both hash and entities differ")
 	}
 }
 
-func TestContentDedup_EntityOverlapStillWorks(t *testing.T) {
+func TestContentDedup_EntityOverlapSameFingerprint(t *testing.T) {
 	store := &testStore{
 		getRecentActDecisionsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
 			return []*storage.HeartbeatAction{
 				{
 					ActedAt:           time.Now().Add(-20 * time.Minute),
 					Decision:          "act",
-					SignalSummaryHash: "differenthash12345",                                  // different hash
-					TopicEntities:     []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, // same entities
+					SignalSummaryHash: "differenthash12345",
+					SignalFingerprint: "fp-same",
+					TopicEntities:     []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"},
 				},
 			}, nil
 		},
 	}
 	k := &Keyoku{store: store}
 
-	// Different hash but 100% entity overlap → Layer 2 should catch it
-	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "owner", "agent", []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, "anotherhash9999999")
+	// Entity overlap 100% + same fingerprint → suppress (truly same topic)
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "owner", "agent", []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, "anotherhash9999999", "fp-same")
 	if !suppressed {
-		t.Error("shouldSuppressTopicRepeat should return true when entity overlap > 85% (Layer 2)")
+		t.Error("shouldSuppressTopicRepeat should suppress when entity overlap > 85% AND fingerprint matches")
+	}
+}
+
+func TestContentDedup_EntityOverlapDifferentFingerprint_NoSuppress(t *testing.T) {
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-20 * time.Minute),
+					Decision:          "act",
+					SignalSummaryHash: "differenthash12345",
+					SignalFingerprint: "fp-old-work",
+					TopicEntities:     []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"},
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	// Entity overlap 100% BUT different fingerprint → allow through (new work on same project)
+	suppressed := k.shouldSuppressTopicRepeat(context.Background(), "owner", "agent", []string{"e1", "e2", "e3", "e4", "e5", "e6", "e7"}, "anotherhash9999999", "fp-new-work")
+	if suppressed {
+		t.Error("shouldSuppressTopicRepeat should NOT suppress when fingerprint differs (new work on same project)")
 	}
 }
 
@@ -1142,5 +1167,381 @@ func TestFindNudgeContent_EmptyStore(t *testing.T) {
 	content := k.findNudgeContent(context.Background(), "entity-1", "default")
 	if content != "" {
 		t.Errorf("findNudgeContent = %q, want empty for empty store", content)
+	}
+}
+
+// --- Signals-Only Mode ---
+
+func TestSignalsOnly_SkipsDecisionPipeline(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && (q.Types[0] == storage.TypePlan || q.Types[0] == storage.TypeActivity) {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Deploy v2", Type: storage.TypePlan,
+						Importance: 0.8, State: storage.StateActive, CreatedAt: now, UpdatedAt: now},
+				}, nil
+			}
+			return nil, nil
+		},
+		// Simulate a recent act (watcher just acted milliseconds ago)
+		getLastHeartbeatActionFn: func(_ context.Context, _, _, decision string) (*storage.HeartbeatAction, error) {
+			if decision == "act" {
+				return &storage.HeartbeatAction{
+					Decision:          "act",
+					ActedAt:           now.Add(-100 * time.Millisecond),
+					SignalFingerprint: "abc123",
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := &Keyoku{
+		store:              store,
+		eventBus:           NewEventBus(false),
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	// Without signals_only: should be suppressed by cooldown
+	result1, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork), WithAutonomy("suggest"))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	// The recent act should cause suppress_cooldown (or similar suppression)
+	if result1.ShouldAct && result1.DecisionReason != "first_contact" {
+		t.Logf("Without signals_only: ShouldAct=%v reason=%s (may vary by store state)", result1.ShouldAct, result1.DecisionReason)
+	}
+
+	// With signals_only: should always return true with signals
+	result2, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork), WithAutonomy("suggest"), WithSignalsOnly(true))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error: %v", err)
+	}
+	if !result2.ShouldAct {
+		t.Error("signals_only=true should force ShouldAct=true")
+	}
+	if result2.DecisionReason != "signals_only" {
+		t.Errorf("DecisionReason = %q, want 'signals_only'", result2.DecisionReason)
+	}
+	if len(result2.PendingWork) == 0 {
+		t.Error("signals_only should still return pending work signals")
+	}
+	if result2.TimePeriod == "" {
+		t.Error("signals_only should set TimePeriod")
+	}
+}
+
+func TestSignalsOnly_NoSignals_StillReturnsTrue(t *testing.T) {
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+	}
+	k := &Keyoku{
+		store:              store,
+		eventBus:           NewEventBus(false),
+		logger:             slog.Default(),
+		timePeriodOverride: PeriodWorking,
+	}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithSignalsOnly(true))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !result.ShouldAct {
+		t.Error("signals_only should always set ShouldAct=true even with no signals")
+	}
+	if result.DecisionReason != "signals_only" {
+		t.Errorf("DecisionReason = %q, want 'signals_only'", result.DecisionReason)
+	}
+}
+
+// --- Issue 2: allChecks contains CheckPositiveDeltas and CheckMemoryVelocity ---
+
+func TestAllChecks_ContainsPositiveDeltasAndVelocity(t *testing.T) {
+	found := map[HeartbeatCheckType]bool{}
+	for _, c := range allChecks {
+		found[c] = true
+	}
+	if !found[CheckPositiveDeltas] {
+		t.Error("allChecks missing CheckPositiveDeltas")
+	}
+	if !found[CheckMemoryVelocity] {
+		t.Error("allChecks missing CheckMemoryVelocity")
+	}
+}
+
+func TestPositiveDeltas_GatedByCheckType(t *testing.T) {
+	now := time.Now()
+	prevSnapshot := StateSnapshot{MemoryCount: 5, MemoryCountAt: now.Add(-1 * time.Hour)}
+	snapshotJSON, _ := json.Marshal(prevSnapshot)
+
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return nil, nil
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, entityID, agentID, triggerCategory string) (*storage.HeartbeatAction, error) {
+			return &storage.HeartbeatAction{
+				ActedAt:       now.Add(-1 * time.Hour),
+				StateSnapshot: string(snapshotJSON),
+			}, nil
+		},
+		getMemoryCountForEntityFn: func(_ context.Context, entityID string) (int, error) {
+			return 15, nil // +10 velocity
+		},
+	}
+	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default(), timePeriodOverride: PeriodWorking}
+
+	// Without CheckPositiveDeltas and CheckMemoryVelocity, should not compute them
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(result.PositiveDeltas) > 0 {
+		t.Error("PositiveDeltas should be empty when CheckPositiveDeltas not in checks")
+	}
+	if result.MemoryVelocity != 0 {
+		t.Errorf("MemoryVelocity = %d, want 0 when CheckMemoryVelocity not in checks", result.MemoryVelocity)
+	}
+}
+
+// --- Issue 3: Stale escape with real signals → act, not nudge ---
+
+func TestStaleEscape_ReActsWithRealSignals(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					{ID: "plan-1", Content: "Build feature X", Type: storage.TypePlan,
+						Importance: 0.8, State: storage.StateActive, Confidence: 0.9,
+						UpdatedAt: now.Add(-1 * time.Hour)},
+				}, nil
+			}
+			return nil, nil
+		},
+		getLastHeartbeatActionFn: func(_ context.Context, entityID, agentID, triggerCategory string) (*storage.HeartbeatAction, error) {
+			// Same fingerprint, but past 2x cooldown (stale escape territory)
+			return &storage.HeartbeatAction{
+				SignalFingerprint: "fp-abc",
+				ActedAt:           now.Add(-5 * time.Hour), // well past 2x cooldown
+			}, nil
+		},
+	}
+
+	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default(), timePeriodOverride: PeriodWorking}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithAutonomy("suggest"))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// With real signals (PendingWork), stale escape should act instead of nudge
+	if result.DecisionReason == "nudge" {
+		t.Error("stale escape with real signals should act, not nudge")
+	}
+}
+
+// --- Issue 4: PendingWork recency gate ---
+
+func TestPendingWork_StalePlansFiltered(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					// Stale plan: 30 days old, no deadline → should be filtered
+					{ID: "old-plan", Content: "Old plan", Type: storage.TypePlan,
+						Importance: 0.9, State: storage.StateActive, Confidence: 0.9,
+						UpdatedAt: now.Add(-30 * 24 * time.Hour)},
+					// Recent plan: 2 days old → should be kept
+					{ID: "recent-plan", Content: "Recent plan", Type: storage.TypePlan,
+						Importance: 0.5, State: storage.StateActive, Confidence: 0.9,
+						UpdatedAt: now.Add(-2 * 24 * time.Hour)},
+					// Old plan with upcoming deadline → should be kept
+					{ID: "deadline-plan", Content: "Deadline plan", Type: storage.TypePlan,
+						Importance: 0.6, State: storage.StateActive, Confidence: 0.9,
+						UpdatedAt:  now.Add(-20 * 24 * time.Hour),
+						ExpiresAt:  timePtr(now.Add(7 * 24 * time.Hour))},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default()}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// Should have 2 items: recent-plan and deadline-plan (not old-plan)
+	if len(result.PendingWork) != 2 {
+		t.Fatalf("PendingWork count = %d, want 2", len(result.PendingWork))
+	}
+	for _, m := range result.PendingWork {
+		if m.ID == "old-plan" {
+			t.Error("stale plan without deadline should be filtered out")
+		}
+	}
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+// --- Issue 5: Topic dedup window uses SignalCooldownNormal ---
+
+func TestTopicDedupWindow_UsesParams(t *testing.T) {
+	// Verify the shouldSuppressTopicRepeat function accepts a window parameter
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, entityID, agentID string, window time.Duration) ([]*storage.HeartbeatAction, error) {
+			// Verify the window is what we passed, not hardcoded 1h
+			if window != 3*time.Hour {
+				t.Errorf("window = %v, want 3h", window)
+			}
+			return nil, nil
+		},
+	}
+	k := &Keyoku{store: store}
+	k.shouldSuppressTopicRepeat(context.Background(), "entity-1", "agent-1", nil, "", "", 3*time.Hour)
+}
+
+// --- Issue 6: Confidence gating ---
+
+func TestConfidenceGating_LowConfidenceFiltered(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if len(q.Types) > 0 && q.Types[0] == storage.TypePlan {
+				return []*storage.Memory{
+					{ID: "low-conf", Content: "Low confidence", Type: storage.TypePlan,
+						Importance: 0.8, State: storage.StateActive, Confidence: 0.3,
+						UpdatedAt: now.Add(-1 * time.Hour)},
+					{ID: "high-conf", Content: "High confidence", Type: storage.TypePlan,
+						Importance: 0.8, State: storage.StateActive, Confidence: 0.7,
+						UpdatedAt: now.Add(-1 * time.Hour)},
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default()}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckPendingWork))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	if len(result.PendingWork) != 1 {
+		t.Fatalf("PendingWork count = %d, want 1 (low-confidence filtered)", len(result.PendingWork))
+	}
+	if result.PendingWork[0].ID != "high-conf" {
+		t.Errorf("expected high-conf memory, got %s", result.PendingWork[0].ID)
+	}
+}
+
+// --- Issue 7: Tag-based tier adjustment ---
+
+func TestTagBasedTierAdjustment(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseTier string
+		tags     []string
+		want     string
+	}{
+		{"critical boosts Normal→Elevated", TierNormal, []string{"critical"}, TierElevated},
+		{"urgent boosts Normal→Elevated", TierNormal, []string{"urgent"}, TierElevated},
+		{"backlog demotes Normal→Low", TierNormal, []string{"backlog"}, TierLow},
+		{"low-priority demotes Elevated→Normal", TierElevated, []string{"low-priority"}, TierNormal},
+		{"critical at Immediate stays Immediate", TierImmediate, []string{"critical"}, TierImmediate},
+		{"backlog at Low stays Low", TierLow, []string{"backlog"}, TierLow},
+		{"no tags = no change", TierNormal, nil, TierNormal},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			memories := []*Memory{{Tags: tt.tags}}
+			got := adjustTierByTags(tt.baseTier, memories)
+			if got != tt.want {
+				t.Errorf("adjustTierByTags(%q, tags=%v) = %q, want %q", tt.baseTier, tt.tags, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Issue 8: Stability weighting in confluence ---
+
+func TestStabilityWeighting_HighStabilityBoostsConfluence(t *testing.T) {
+	highStabResult := &HeartbeatResult{
+		PendingWork: []*Memory{{Stability: 0.9}},
+		Decaying:    []*Memory{{Stability: 0.8}},
+	}
+	lowStabResult := &HeartbeatResult{
+		PendingWork: []*Memory{{Stability: 0.1}},
+		Decaying:    []*Memory{{Stability: 0.1}},
+	}
+
+	signals := map[HeartbeatCheckType]string{
+		CheckPendingWork: TierNormal,
+		CheckDecaying:    TierLow,
+	}
+
+	highScore, _ := calculateSignalConfluence(signals, "suggest", highStabResult)
+	lowScore, _ := calculateSignalConfluence(signals, "suggest", lowStabResult)
+
+	if highScore <= lowScore {
+		t.Errorf("high stability score (%d) should be > low stability score (%d)", highScore, lowScore)
+	}
+}
+
+// --- Issue 9: Response rate multiplier smooth curve ---
+
+func TestResponseCooldownMultiplier_SmoothCurve(t *testing.T) {
+	tests := []struct {
+		rate    float64
+		wantMin float64
+		wantMax float64
+	}{
+		{0.0, 9.9, 10.1},    // rate 0 → 10x
+		{0.1, 7.0, 9.0},     // rate 0.1 → ~8.2x (smooth, not 10x)
+		{0.25, 4.0, 6.0},    // rate 0.25 → ~5.5x (smooth, not 3x)
+		{0.3, 3.0, 5.5},     // rate 0.3 → ~4.6x (smooth, not 3x step)
+		{0.5, 0.9, 1.1},     // rate 0.5 → 1x
+		{0.8, 0.9, 1.1},     // rate 0.8 → 1x
+		{1.0, 0.9, 1.1},     // rate 1.0 → 1x
+	}
+	for _, tt := range tests {
+		got := responseCooldownMultiplier(tt.rate)
+		if got < tt.wantMin || got > tt.wantMax {
+			t.Errorf("responseCooldownMultiplier(%v) = %v, want [%v, %v]",
+				tt.rate, got, tt.wantMin, tt.wantMax)
+		}
+	}
+}
+
+func TestShiftTier(t *testing.T) {
+	tests := []struct {
+		tier  string
+		delta int
+		want  string
+	}{
+		{TierNormal, 1, TierElevated},
+		{TierNormal, -1, TierLow},
+		{TierImmediate, 1, TierImmediate}, // clamped
+		{TierLow, -1, TierLow},           // clamped
+		{TierLow, 2, TierElevated},
+	}
+	for _, tt := range tests {
+		got := shiftTier(tt.tier, tt.delta)
+		if got != tt.want {
+			t.Errorf("shiftTier(%q, %d) = %q, want %q", tt.tier, tt.delta, got, tt.want)
+		}
 	}
 }

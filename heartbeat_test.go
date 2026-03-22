@@ -352,8 +352,8 @@ func TestHeartbeatCheckTypes(t *testing.T) {
 	if CheckStale != "stale_monitors" {
 		t.Errorf("CheckStale = %q", CheckStale)
 	}
-	if len(allChecks) != 12 {
-		t.Errorf("allChecks = %d, want 12", len(allChecks))
+	if len(allChecks) != 14 {
+		t.Errorf("allChecks = %d, want 14", len(allChecks))
 	}
 }
 

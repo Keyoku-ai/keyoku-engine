@@ -131,6 +131,10 @@ type heartbeatContextRequest struct {
 	// Conversation awareness
 	InConversation bool `json:"in_conversation,omitempty"` // Plugin signals user is actively talking
 
+	// Signals-only mode: skip decision pipeline, return fresh signals with ShouldAct=true.
+	// Used when watcher already decided to act and delivery path needs signals without re-evaluating.
+	SignalsOnly bool `json:"signals_only,omitempty"`
+
 	// Optional parameter overrides (defaults come from autonomy level)
 	NudgeAfterSilence    string `json:"nudge_after_silence,omitempty"` // e.g. "4h"
 	MaxNudgesPerDay      int    `json:"max_nudges_per_day,omitempty"`
