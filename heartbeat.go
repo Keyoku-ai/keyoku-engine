@@ -377,7 +377,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				// Recency gate: only include if updated within 7 days OR has deadline within 14 days
 				// Zero UpdatedAt = not set, treat as recent
 				recentEnough := m.UpdatedAt.IsZero() || m.UpdatedAt.After(stalePlanCutoff)
-				hasUpcomingDeadline := m.ExpiresAt != nil && m.ExpiresAt.Before(deadlineHorizon)
+				hasUpcomingDeadline := m.ExpiresAt != nil && m.ExpiresAt.After(now) && m.ExpiresAt.Before(deadlineHorizon)
 				if recentEnough || hasUpcomingDeadline {
 					result.PendingWork = append(result.PendingWork, m)
 				}

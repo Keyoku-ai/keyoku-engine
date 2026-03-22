@@ -145,6 +145,40 @@ func TestHeartbeatCheck_PendingWork(t *testing.T) {
 	}
 }
 
+func TestHeartbeatCheck_PendingWork_ExpiredDeadlineDoesNotBypassRecency(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	expired := now.Add(-2 * time.Hour)
+	staleUpdated := now.Add(-8 * 24 * time.Hour)
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{
+				{
+					Content:   "old plan",
+					Type:      storage.TypePlan,
+					Importance: 0.9,
+					State:     storage.StateActive,
+					UpdatedAt: staleUpdated,
+					ExpiresAt: &expired,
+				},
+			}, nil
+		},
+	}
+
+	k := &Keyoku{store: store, timePeriodOverride: PeriodWorking}
+	result, err := k.HeartbeatCheck(
+		context.Background(),
+		"entity-1",
+		WithChecks(CheckPendingWork),
+		WithVirtualNow(now),
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if len(result.PendingWork) != 0 {
+		t.Errorf("PendingWork = %d, want 0", len(result.PendingWork))
+	}
+}
+
 func TestHeartbeatCheck_PendingWork_ResolvedMemoryExcluded(t *testing.T) {
 	store := &testStore{
 		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
