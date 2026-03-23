@@ -124,6 +124,13 @@ func main() {
 			)
 		}
 
+		// Set watcher autonomy level (default: "suggest")
+		autonomy := cfg.WatcherAutonomy
+		if autonomy == "" {
+			autonomy = "suggest"
+		}
+		wcfg.HeartbeatOpts = append(wcfg.HeartbeatOpts, keyoku.WithAutonomy(autonomy))
+
 		k.StartWatcher(wcfg)
 		log.Printf("  watcher: auto-started (entities: %v, adaptive: %v, delivery: %v, llm: %v)",
 			wcfg.EntityIDs, wcfg.Adaptive, wcfg.Delivery != nil, k.Provider() != nil)

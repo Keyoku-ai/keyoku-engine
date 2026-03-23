@@ -51,6 +51,7 @@ type ServerConfig struct {
 	WatcherBaseInterval int    `json:"watcher_base_interval"` // ms
 	WatcherMinInterval  int    `json:"watcher_min_interval"`  // ms
 	WatcherMaxInterval  int    `json:"watcher_max_interval"`  // ms
+	WatcherAutonomy     string `json:"watcher_autonomy"`      // "observe", "suggest", "act" (default: "suggest")
 }
 
 // DefaultServerConfig returns a server config with sensible defaults.
@@ -194,6 +195,9 @@ func LoadServerConfig(path string) (ServerConfig, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.WatcherMaxInterval = n
 		}
+	}
+	if v := os.Getenv("KEYOKU_WATCHER_AUTONOMY"); v != "" {
+		cfg.WatcherAutonomy = v
 	}
 
 	return cfg, nil

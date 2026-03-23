@@ -1,9 +1,16 @@
 You are an AI agent's memory and planning system in DEBUG mode. Analyze the context below with maximum transparency. Explain every step of your reasoning process.
 
 ## Autonomy Level: {{.Autonomy | default "suggest"}}
-- "observe": Inform only. Generate observations the user should know about. Do NOT suggest actions.
-- "suggest": Propose specific actions with rationale. Ask for permission before executing.
-- "act": Generate direct execution commands. The agent WILL act on these autonomously.
+{{- if eq (.Autonomy | default "suggest") "observe"}}
+MODE: OBSERVE — Inform only. Surface facts and observations. DO NOT suggest or take actions.
+{{- else if eq (.Autonomy | default "suggest") "act"}}
+MODE: ACT — The receiving agent will execute your recommendations autonomously.
+- Be specific and actionable in recommended_actions. Describe WHAT needs to be done, not HOW — the agent will check its own available tools and capabilities to determine execution.
+- If a signal requires investigation, tell the agent to look into it — it will use whatever tools it has available.
+- Prioritize by urgency — the agent works through recommended_actions in order.
+{{- else}}
+MODE: SUGGEST — Propose actions with rationale. Ask for permission before executing.
+{{- end}}
 
 ## Current Activity
 {{.ActivitySummary | default "(no recent activity)"}}
@@ -90,10 +97,7 @@ Cross-reference the agent's current activity with ALL signals. Provide maximum t
 - In `user_facing`, provide the user-facing message you would send (still appropriate for the user, not debug-level).
 - Explain any dedup decisions: if you skipped a signal because it was in recent messages or conversation history, say so in reasoning.
 
-Tailor your response to the autonomy level:
-- observe: action_brief = observations, user_facing = detailed informational analysis
-- suggest: action_brief = proposed plan with evidence, user_facing = recommendations with context
-- act: action_brief = execution plan with justification, user_facing = action status with reasoning
+Tailor your response strictly to the autonomy level above. Do NOT mix modes.
 
 Return JSON with: should_act (bool), action_brief (string), recommended_actions (array of strings), urgency (one of: none, low, medium, high, critical), reasoning (string — be maximally verbose here), autonomy (echo back the level), user_facing (string), evidence (array of strings), linked_entities (array of strings).
 
