@@ -43,8 +43,9 @@ type MemoryDetail struct {
 	Type       storage.MemoryType
 	Importance float64
 	Confidence float64
-	Action     string // "created", "updated", "deleted", "resolved", "skipped"
+	Action     string    // "created", "updated", "deleted", "resolved", "skipped"
 	Reason     string
+	Embedding  []float32 `json:"-"` // internal: used by autoResolveSuperseded, excluded from JSON
 }
 
 // Add extracts and stores memories from content.
@@ -201,8 +202,8 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 
 	// Auto-resolve: detect when new EVENT/CONTEXT memories supersede existing PLAN/ACTIVITY memories.
 	// Uses similarity results already computed (no extra LLM or embedding calls).
-	if result.MemoriesCreated > 0 && len(similarMemories) > 0 {
-		result.MemoriesResolved += e.autoResolveSuperseded(ctx, entityID, result.Details, similarMemories)
+	if result.MemoriesCreated > 0 {
+		result.MemoriesResolved += e.autoResolveSuperseded(ctx, entityID, result.Details, similarMemories, simOpts)
 	}
 
 	// Adaptive importance re-evaluation: check if new content changes importance of related memories
@@ -439,6 +440,7 @@ func (e *Engine) processNewMemory(ctx context.Context, extracted llm.ExtractedMe
 		Importance: extracted.Importance,
 		Confidence: extracted.Confidence,
 		Action:     "created",
+		Embedding:  embedding,
 	}, nil
 }
 
@@ -572,8 +574,13 @@ func (e *Engine) processResolve(ctx context.Context, res llm.MemoryResolve, simi
 
 // autoResolveSuperseded catches cases where the LLM created a completion memory
 // (EVENT/CONTEXT) instead of issuing a resolve action on an existing PLAN/ACTIVITY.
-// Uses the similarity results already computed during Add() — no extra LLM or embedding calls.
-func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, created []MemoryDetail, similar []*storage.SimilarityResult) int {
+//
+// Two passes:
+//  1. Check raw-input similarity results (original behavior, works when input is short/direct)
+//  2. Use each new completion memory's OWN embedding to find matching PLANs/ACTIVITYs.
+//     This is the key fix: a webhook payload embedding won't match a short PLAN, but
+//     the extracted EVENT "PR #32 merged" WILL match PLAN "fix PR #32".
+func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, created []MemoryDetail, similar []*storage.SimilarityResult, opts storage.SimilarityOptions) int {
 	completionTypes := map[storage.MemoryType]bool{
 		storage.TypeEvent:   true,
 		storage.TypeContext: true,
@@ -583,25 +590,28 @@ func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, cre
 		storage.TypeActivity: true,
 	}
 
-	// Collect newly created completion memories
+	// Collect newly created memories and identify completion types
 	createdIDs := make(map[string]bool)
-	hasCompletion := false
+	var completionMemories []MemoryDetail
 	for _, d := range created {
 		if d.Action == "created" {
 			createdIDs[d.ID] = true
-			if completionTypes[d.Type] {
-				hasCompletion = true
+			if completionTypes[d.Type] && len(d.Embedding) > 0 {
+				completionMemories = append(completionMemories, d)
 			}
 		}
 	}
-	if !hasCompletion {
+	if len(completionMemories) == 0 {
 		return 0
 	}
 
 	const autoResolveThreshold = 0.70
 	resolved := 0
+	resolvedIDs := make(map[string]bool)
+
+	// Pass 1: Check raw-input similarity results (original behavior)
 	for _, sim := range similar {
-		if createdIDs[sim.Memory.ID] {
+		if createdIDs[sim.Memory.ID] || resolvedIDs[sim.Memory.ID] {
 			continue
 		}
 		if sim.Memory.State != storage.StateActive {
@@ -614,11 +624,10 @@ func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, cre
 			continue
 		}
 
-		// Active PLAN/ACTIVITY is semantically similar to input that produced a
-		// completion memory — the plan was completed, auto-resolve it.
 		if err := e.store.ResolveMemory(ctx, sim.Memory.ID); err != nil {
 			continue
 		}
+		resolvedIDs[sim.Memory.ID] = true
 		resolved++
 
 		//nolint:errcheck // fire-and-forget logging
@@ -626,14 +635,64 @@ func (e *Engine) autoResolveSuperseded(ctx context.Context, entityID string, cre
 			MemoryID:  sim.Memory.ID,
 			Operation: "auto_resolve",
 			Changes:   map[string]any{"content": sim.Memory.Content},
-			Reason:    "superseded by completion memory",
+			Reason:    "superseded by completion memory (input similarity)",
 		})
 
 		e.emit("memory.resolved", entityID, sim.Memory.AgentID, sim.Memory.TeamID, map[string]any{
 			"memory": sim.Memory,
-			"reason": "auto-resolved: similar completion memory created",
+			"reason": "auto-resolved: input similar to active plan/activity",
 		})
 	}
+
+	// Pass 2: Use each completion memory's own embedding to find matching PLANs/ACTIVITYs.
+	// This catches the common case where the raw input (e.g. long webhook JSON) doesn't
+	// match a short PLAN, but the extracted EVENT content does.
+	for _, cm := range completionMemories {
+		candidates, err := e.store.FindSimilarWithOptions(ctx, cm.Embedding, entityID, 10, autoResolveThreshold, opts)
+		if err != nil {
+			continue
+		}
+		for _, cand := range candidates {
+			if createdIDs[cand.Memory.ID] || resolvedIDs[cand.Memory.ID] {
+				continue
+			}
+			if cand.Memory.State != storage.StateActive {
+				continue
+			}
+			if !pendingTypes[cand.Memory.Type] {
+				continue
+			}
+			if cand.Similarity < autoResolveThreshold {
+				continue
+			}
+
+			if err := e.store.ResolveMemory(ctx, cand.Memory.ID); err != nil {
+				continue
+			}
+			resolvedIDs[cand.Memory.ID] = true
+			resolved++
+
+			//nolint:errcheck // fire-and-forget logging
+			e.store.LogHistory(ctx, &storage.HistoryEntry{
+				MemoryID:  cand.Memory.ID,
+				Operation: "auto_resolve",
+				Changes: map[string]any{
+					"plan_content":       cand.Memory.Content,
+					"completion_content": cm.Content,
+					"similarity":         cand.Similarity,
+				},
+				Reason: fmt.Sprintf("superseded by completion memory: %q", cm.Content),
+			})
+
+			e.emit("memory.resolved", entityID, cand.Memory.AgentID, cand.Memory.TeamID, map[string]any{
+				"memory":             cand.Memory,
+				"completion_memory":  cm.Content,
+				"similarity":         cand.Similarity,
+				"reason":             "auto-resolved: completion memory matched active plan/activity",
+			})
+		}
+	}
+
 	return resolved
 }
 
