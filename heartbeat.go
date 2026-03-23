@@ -379,6 +379,11 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				if m.Importance < cfg.importanceFloor {
 					continue
 				}
+				// Skip cron-tagged memories — they surface via their own "Scheduled" signal
+				// category (with IsDue() time filtering) and should not appear as generic pending work.
+				if memoryHasCronTag(m.Tags) {
+					continue
+				}
 				// Recency gate: only include if updated within 7 days OR has deadline within 14 days
 				// Zero UpdatedAt = not set, treat as recent
 				recentEnough := m.UpdatedAt.IsZero() || m.UpdatedAt.After(stalePlanCutoff)
@@ -937,6 +942,16 @@ func filterByConfidence(memories []*Memory, minConfidence float64) []*Memory {
 }
 
 // --- helpers ---
+
+// memoryHasCronTag returns true if any tag starts with "cron:".
+func memoryHasCronTag(tags []string) bool {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "cron:") {
+			return true
+		}
+	}
+	return false
+}
 
 // Deprecated: parseCronTag is superseded by ParseScheduleFromTags in schedule.go.
 // Kept temporarily for any external callers; will be removed in a future release.
