@@ -114,7 +114,7 @@ func TestTimePeriodCooldownMultiplier(t *testing.T) {
 		{PeriodWorking, 1.0},
 		{PeriodEvening, 1.5},
 		{PeriodLateNight, 3.0},
-		{PeriodQuiet, 10.0},
+		{PeriodQuiet, 3.0},
 	}
 	for _, tt := range tests {
 		got := timePeriodCooldownMultiplier(tt.period)
@@ -1622,10 +1622,10 @@ func TestResponseCooldownMultiplier_SmoothCurve(t *testing.T) {
 		wantMin float64
 		wantMax float64
 	}{
-		{0.0, 9.9, 10.1},    // rate 0 → 10x
-		{0.1, 7.0, 9.0},     // rate 0.1 → ~8.2x (smooth, not 10x)
-		{0.25, 4.0, 6.0},    // rate 0.25 → ~5.5x (smooth, not 3x)
-		{0.3, 3.0, 5.5},     // rate 0.3 → ~4.6x (smooth, not 3x step)
+		{0.0, 1.9, 2.1},     // rate 0 → 2x (capped to prevent silence)
+		{0.1, 1.5, 1.9},     // rate 0.1 → ~1.8x
+		{0.25, 1.4, 1.6},    // rate 0.25 → ~1.5x
+		{0.3, 1.3, 1.5},     // rate 0.3 → ~1.4x
 		{0.5, 0.9, 1.1},     // rate 0.5 → 1x
 		{0.8, 0.9, 1.1},     // rate 0.8 → 1x
 		{1.0, 0.9, 1.1},     // rate 1.0 → 1x

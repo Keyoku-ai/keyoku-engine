@@ -86,7 +86,7 @@ func timePeriodCooldownMultiplier(period string) float64 {
 	case PeriodLateNight:
 		return 3.0
 	case PeriodQuiet:
-		return 10.0
+		return 3.0 // was 10x, but compound with response rate caused permanent silence
 	default:
 		return 1.0
 	}

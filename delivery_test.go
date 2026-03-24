@@ -310,9 +310,9 @@ func TestComputeNextInterval_QuietHours(t *testing.T) {
 	})
 
 	interval := w.computeNextInterval()
-	// 5m * 10.0 = 50m, clamped to max 30m
-	if interval != 30*time.Minute {
-		t.Errorf("expected 30m (clamped) during quiet hours, got %v", interval)
+	// 5m * 3.0 (quiet hours) = 15m
+	if interval != 15*time.Minute {
+		t.Errorf("expected 15m during quiet hours, got %v", interval)
 	}
 }
 

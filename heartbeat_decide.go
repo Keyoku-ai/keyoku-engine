@@ -378,8 +378,10 @@ func (k *Keyoku) finalizeAct(ctx context.Context, entityID, agentID string, cfg 
 		// Read back escalation level
 		if ts, err := k.store.GetTopicSurfacing(ctx, entityID, agentID, fingerprint); err == nil && ts != nil {
 			result.EscalationLevel = ts.TimesSurfaced
-			// Auto-drop after 4 surfacings with no response
-			if ts.TimesSurfaced >= 4 && !ts.UserResponded {
+			// Auto-drop after 8 surfacings with no response (was 4, but that was
+			// too aggressive — users may simply be busy for a day and topics
+			// shouldn't be permanently silenced that quickly).
+			if ts.TimesSurfaced >= 8 && !ts.UserResponded {
 				_ = k.store.MarkTopicDropped(ctx, entityID, agentID, fingerprint)
 			}
 		}
@@ -566,17 +568,20 @@ func (k *Keyoku) calculateResponseRate(ctx context.Context, entityID, agentID st
 }
 
 // responseCooldownMultiplier returns a multiplier for cooldowns based on response rate.
-// Uses linear interpolation: rate 0 → 10x, rate 0.5 → 1x, rate 0.5+ → 1x.
-// This avoids the cliff edges of a step function.
+// Uses linear interpolation: rate 0 → 2x, rate 0.5 → 1x, rate 0.5+ → 1x.
+// Capped at 2x to prevent the watcher from going completely silent when combined
+// with other multipliers (quiet hours, escalation). The old 10x ceiling caused
+// compound penalties (10x response × 10x quiet = 100x cooldown = permanent silence).
 func responseCooldownMultiplier(rate float64) float64 {
+	const maxMult = 2.0
 	if rate >= 0.5 {
 		return 1.0
 	}
 	if rate <= 0 {
-		return 10.0
+		return maxMult
 	}
-	// Linear interpolation: 10x at 0, 1x at 0.5
-	return 10.0 - (rate/0.5)*9.0
+	// Linear interpolation: 2x at 0, 1x at 0.5
+	return maxMult - (rate/0.5)*(maxMult-1.0)
 }
 
 // checkResponseTracking checks unchecked heartbeat actions and marks whether the user responded.
