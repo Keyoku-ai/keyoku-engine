@@ -164,11 +164,11 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 		}
 	case "act":
 		return HeartbeatParams{
-			SignalCooldownNormal:   10 * time.Minute,
-			SignalCooldownElevated: 5 * time.Minute,
-			SignalCooldownLow:      30 * time.Minute,
-			NudgeAfterSilence:     30 * time.Minute,
-			MaxNudgesPerDay:       24,
+			SignalCooldownNormal:   30 * time.Minute,
+			SignalCooldownElevated: 15 * time.Minute,
+			SignalCooldownLow:      60 * time.Minute,
+			NudgeAfterSilence:     2 * time.Hour,
+			MaxNudgesPerDay:       8,
 			NudgeMaxInterval:      48 * time.Hour,
 		}
 	default: // "suggest"
