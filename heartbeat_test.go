@@ -153,12 +153,12 @@ func TestHeartbeatCheck_PendingWork_ExpiredDeadlineDoesNotBypassRecency(t *testi
 		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
 			return []*storage.Memory{
 				{
-					Content:   "old plan",
-					Type:      storage.TypePlan,
+					Content:    "old plan",
+					Type:       storage.TypePlan,
 					Importance: 0.9,
-					State:     storage.StateActive,
-					UpdatedAt: staleUpdated,
-					ExpiresAt: &expired,
+					State:      storage.StateActive,
+					UpdatedAt:  staleUpdated,
+					ExpiresAt:  &expired,
 				},
 			}, nil
 		},
@@ -259,6 +259,9 @@ func TestHeartbeatCheck_Scheduled_DefaultAutoAck(t *testing.T) {
 				State:          storage.StateActive,
 			}}, nil
 		},
+		getMemoryFn: func(_ context.Context, id string) (*storage.Memory, error) {
+			return &storage.Memory{ID: id, Tags: storage.StringSlice{"cron:daily"}}, nil
+		},
 		updateAccessStatsFn: func(_ context.Context, ids []string) error {
 			ackCalls++
 			if len(ids) != 1 || ids[0] != "sched-1" {
@@ -314,8 +317,9 @@ func TestHeartbeatCheck_Scheduled_AutoAckDisabled(t *testing.T) {
 }
 
 func TestHeartbeatCheck_Scheduled_AutoAckDisabled_DoesNotConsumeOnce(t *testing.T) {
-	now := time.Now()
-	oneHourAgo := now.Add(-1 * time.Hour)
+	now := time.Now().UTC()
+	target := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	lastRun := now.Add(-2 * time.Hour)
 	ackCalls := 0
 	archiveCalls := 0
 	store := &testStore{
@@ -323,9 +327,9 @@ func TestHeartbeatCheck_Scheduled_AutoAckDisabled_DoesNotConsumeOnce(t *testing.
 			return []*storage.Memory{{
 				ID:             "once-1",
 				Content:        "one-time task",
-				Tags:           storage.StringSlice{"cron:once:2000-01-01T00:00:00"},
-				LastAccessedAt: &oneHourAgo,
-				CreatedAt:      oneHourAgo,
+				Tags:           storage.StringSlice{"cron:once:" + target},
+				LastAccessedAt: &lastRun,
+				CreatedAt:      lastRun,
 				State:          storage.StateActive,
 			}}, nil
 		},
@@ -708,9 +712,9 @@ func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
 		agentID:     "agent-1",
 	}
 	result := &HeartbeatResult{
-		Summary:          "PR #42 merged, deployment pending",
-		TimePeriod:       "last 2 hours",
-		ConfluenceScore:  99,
+		Summary:         "PR #42 merged, deployment pending",
+		TimePeriod:      "last 2 hours",
+		ConfluenceScore: 99,
 		PendingWork: []*storage.Memory{
 			{Content: "Deploy after PR merge"},
 		},

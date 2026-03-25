@@ -377,8 +377,8 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Descending: true,
 		}))
 		if err == nil {
-			stalePlanCutoff := now.Add(-7 * 24 * time.Hour)   // 7 days
-			deadlineHorizon := now.Add(14 * 24 * time.Hour)   // 14 days
+			stalePlanCutoff := now.Add(-7 * 24 * time.Hour) // 7 days
+			deadlineHorizon := now.Add(14 * 24 * time.Hour) // 14 days
 			for _, m := range pending {
 				if m.Importance < cfg.importanceFloor {
 					continue
@@ -443,7 +443,7 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				if sched.IsDue(lastRun, now) {
 					result.Scheduled = append(result.Scheduled, m)
 
-					if cfg.autoAckScheduled {
+					if cfg.autoAckScheduled && m.ID != "" {
 						// Auto-acknowledge/consume due schedules during heartbeat scan.
 						// In deferred mode, integrations are responsible for calling
 						// AcknowledgeSchedule after successful downstream delivery.
