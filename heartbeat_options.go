@@ -65,6 +65,13 @@ func WithInConversation(inConversation bool) HeartbeatOption {
 	return func(c *heartbeatConfig) { c.inConversation = inConversation }
 }
 
+// WithAutoAckScheduled controls whether due schedules are acknowledged
+// during HeartbeatCheck itself (default: true). Set false when an
+// integration wants to ack only after successful downstream delivery.
+func WithAutoAckScheduled(enabled bool) HeartbeatOption {
+	return func(c *heartbeatConfig) { c.autoAckScheduled = enabled }
+}
+
 // WithVirtualNow overrides time.Now() for all signal computation.
 // Used by the demo recording script to simulate heartbeat at different points in time.
 func WithVirtualNow(t time.Time) HeartbeatOption {

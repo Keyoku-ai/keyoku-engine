@@ -17,13 +17,13 @@ import (
 // HeartbeatResult contains the result of a HeartbeatCheck.
 type HeartbeatResult struct {
 	ShouldAct     bool
-	PendingWork   []*Memory       // Active plans/tasks needing attention
-	Deadlines     []*Memory       // Approaching expiry
-	Scheduled     []*Memory       // Cron-tagged memories that are due
-	Decaying      []*Memory       // Important memories nearing decay threshold
-	Conflicts     []ConflictPair  // Unresolved contradictions
-	StaleMonitors []*Memory       // Monitoring tasks overdue for check
-	Summary       string          // Pre-built context string for LLM
+	PendingWork   []*Memory      // Active plans/tasks needing attention
+	Deadlines     []*Memory      // Approaching expiry
+	Scheduled     []*Memory      // Cron-tagged memories that are due
+	Decaying      []*Memory      // Important memories nearing decay threshold
+	Conflicts     []ConflictPair // Unresolved contradictions
+	StaleMonitors []*Memory      // Monitoring tasks overdue for check
+	Summary       string         // Pre-built context string for LLM
 
 	// Extended heartbeat signals (populated by new check types)
 	GoalProgress  []GoalProgressItem  // Plan vs activity cross-reference
@@ -50,13 +50,13 @@ type HeartbeatResult struct {
 	InConversation  bool   // Whether user is actively in conversation
 
 	// v2: Intelligence metadata
-	PositiveDeltas  []PositiveDelta // Detected positive changes since last heartbeat
-	GraphContext    []string        // Entity relationship context for LLM
-	TopicEntities  []string        // Entity IDs from current signals
-	ResponseRate   float64         // 7-day user response rate (0.0-1.0)
-	ConfluenceScore int            // Total signal weight
-	CooldownState   string         // "active", "expired", "bypassed"
-	ConfluenceThreshold int        // Minimum confluence score for current autonomy
+	PositiveDeltas      []PositiveDelta // Detected positive changes since last heartbeat
+	GraphContext        []string        // Entity relationship context for LLM
+	TopicEntities       []string        // Entity IDs from current signals
+	ResponseRate        float64         // 7-day user response rate (0.0-1.0)
+	ConfluenceScore     int             // Total signal weight
+	CooldownState       string          // "active", "expired", "bypassed"
+	ConfluenceThreshold int             // Minimum confluence score for current autonomy
 
 	// v3: Memory velocity
 	MemoryVelocity     int  // New memories since last act
@@ -74,11 +74,11 @@ type HeartbeatResult struct {
 
 // StateSnapshot captures key metrics at a point in time for delta detection.
 type StateSnapshot struct {
-	GoalStatuses         map[string]string `json:"goal_statuses"`          // planID -> status
-	RelationshipSilences map[string]int    `json:"relationship_silences"`  // entityID -> days_silent
+	GoalStatuses         map[string]string `json:"goal_statuses"`         // planID -> status
+	RelationshipSilences map[string]int    `json:"relationship_silences"` // entityID -> days_silent
 	SentimentDirection   string            `json:"sentiment_direction"`
-	MemoryCount          int               `json:"memory_count"`           // Total active memories at snapshot time
-	MemoryCountAt        time.Time         `json:"memory_count_at"`        // When count was taken
+	MemoryCount          int               `json:"memory_count"`    // Total active memories at snapshot time
+	MemoryCountAt        time.Time         `json:"memory_count_at"` // When count was taken
 }
 
 // PositiveDelta represents a detected improvement between heartbeat cycles.
@@ -99,19 +99,19 @@ const (
 
 // signalTierMap maps check types to urgency tiers.
 var signalTierMap = map[HeartbeatCheckType]string{
-	CheckScheduled:    TierImmediate,
-	CheckDeadlines:    TierImmediate,
-	CheckConflicts:    TierElevated,
-	CheckContinuity:   TierElevated,
-	CheckStale:        TierElevated,
-	CheckPendingWork:  TierNormal,
-	CheckGoalProgress: TierNormal,
-	CheckKnowledge:    TierNormal,
-	CheckDecaying:     TierLow,
-	CheckSentiment:    TierLow,
-	CheckRelationship: TierLow,
-	CheckPatterns:        TierLow,
-	CheckPositiveDeltas:  TierNormal,
+	CheckScheduled:      TierImmediate,
+	CheckDeadlines:      TierImmediate,
+	CheckConflicts:      TierElevated,
+	CheckContinuity:     TierElevated,
+	CheckStale:          TierElevated,
+	CheckPendingWork:    TierNormal,
+	CheckGoalProgress:   TierNormal,
+	CheckKnowledge:      TierNormal,
+	CheckDecaying:       TierLow,
+	CheckSentiment:      TierLow,
+	CheckRelationship:   TierLow,
+	CheckPatterns:       TierLow,
+	CheckPositiveDeltas: TierNormal,
 	CheckMemoryVelocity: TierElevated,
 }
 
@@ -158,27 +158,27 @@ func DefaultHeartbeatParams(autonomy string) HeartbeatParams {
 			SignalCooldownNormal:   4 * time.Hour,
 			SignalCooldownElevated: 2 * time.Hour,
 			SignalCooldownLow:      8 * time.Hour,
-			NudgeAfterSilence:     0, // disabled
-			MaxNudgesPerDay:       0,
-			NudgeMaxInterval:      12 * time.Hour,
+			NudgeAfterSilence:      0, // disabled
+			MaxNudgesPerDay:        0,
+			NudgeMaxInterval:       12 * time.Hour,
 		}
 	case "act":
 		return HeartbeatParams{
 			SignalCooldownNormal:   30 * time.Minute,
 			SignalCooldownElevated: 15 * time.Minute,
 			SignalCooldownLow:      60 * time.Minute,
-			NudgeAfterSilence:     2 * time.Hour,
-			MaxNudgesPerDay:       8,
-			NudgeMaxInterval:      48 * time.Hour,
+			NudgeAfterSilence:      2 * time.Hour,
+			MaxNudgesPerDay:        8,
+			NudgeMaxInterval:       48 * time.Hour,
 		}
 	default: // "suggest"
 		return HeartbeatParams{
 			SignalCooldownNormal:   2 * time.Hour,
 			SignalCooldownElevated: 30 * time.Minute,
 			SignalCooldownLow:      4 * time.Hour,
-			NudgeAfterSilence:     4 * time.Hour,
-			MaxNudgesPerDay:       3,
-			NudgeMaxInterval:      24 * time.Hour,
+			NudgeAfterSilence:      4 * time.Hour,
+			MaxNudgesPerDay:        3,
+			NudgeMaxInterval:       24 * time.Hour,
 		}
 	}
 }
@@ -211,7 +211,7 @@ type SentimentTrend struct {
 
 // RelationshipAlert flags entities that have gone silent but have active plans.
 type RelationshipAlert struct {
-	Entity       *storage.Entity
+	Entity        *storage.Entity
 	LastMentioned time.Time
 	DaysSilent    int
 	RelatedPlans  []*Memory
@@ -254,9 +254,9 @@ type heartbeatConfig struct {
 	teamHeartbeat bool   // Enables team heartbeat mode
 
 	// LLM prioritization (opt-in)
-	llmProvider    llm.Provider
-	agentContext   string
-	entityContext  string
+	llmProvider   llm.Provider
+	agentContext  string
+	entityContext string
 
 	// Intelligent heartbeat
 	autonomy        string           // "observe", "suggest", "act"
@@ -275,6 +275,9 @@ type heartbeatConfig struct {
 	// Verbosity control for LLM analysis
 	verbosity llm.HeartbeatVerbosity
 
+	// Schedule handling
+	autoAckScheduled bool // Automatically acknowledge due schedules during heartbeat scan
+
 	// Virtual time override (for demo recording)
 	virtualNow time.Time // When non-zero, replaces time.Now() for all signal computation
 }
@@ -283,20 +286,20 @@ type heartbeatConfig struct {
 type HeartbeatCheckType string
 
 const (
-	CheckPendingWork  HeartbeatCheckType = "pending_work"
-	CheckDeadlines    HeartbeatCheckType = "deadlines"
-	CheckScheduled    HeartbeatCheckType = "scheduled"
-	CheckDecaying     HeartbeatCheckType = "decaying"
-	CheckConflicts    HeartbeatCheckType = "conflicts"
-	CheckStale        HeartbeatCheckType = "stale_monitors"
-	CheckGoalProgress HeartbeatCheckType = "goal_progress"
-	CheckContinuity   HeartbeatCheckType = "continuity"
-	CheckSentiment    HeartbeatCheckType = "sentiment"
-	CheckRelationship HeartbeatCheckType = "relationship"
-	CheckKnowledge    HeartbeatCheckType = "knowledge_gaps"
-	CheckPatterns         HeartbeatCheckType = "patterns"
-	CheckPositiveDeltas   HeartbeatCheckType = "positive_deltas"
-	CheckMemoryVelocity   HeartbeatCheckType = "memory_velocity"
+	CheckPendingWork    HeartbeatCheckType = "pending_work"
+	CheckDeadlines      HeartbeatCheckType = "deadlines"
+	CheckScheduled      HeartbeatCheckType = "scheduled"
+	CheckDecaying       HeartbeatCheckType = "decaying"
+	CheckConflicts      HeartbeatCheckType = "conflicts"
+	CheckStale          HeartbeatCheckType = "stale_monitors"
+	CheckGoalProgress   HeartbeatCheckType = "goal_progress"
+	CheckContinuity     HeartbeatCheckType = "continuity"
+	CheckSentiment      HeartbeatCheckType = "sentiment"
+	CheckRelationship   HeartbeatCheckType = "relationship"
+	CheckKnowledge      HeartbeatCheckType = "knowledge_gaps"
+	CheckPatterns       HeartbeatCheckType = "patterns"
+	CheckPositiveDeltas HeartbeatCheckType = "positive_deltas"
+	CheckMemoryVelocity HeartbeatCheckType = "memory_velocity"
 )
 
 var allChecks = []HeartbeatCheckType{
@@ -311,12 +314,13 @@ var allChecks = []HeartbeatCheckType{
 // Returns whether the agent should act and what needs attention.
 func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...HeartbeatOption) (*HeartbeatResult, error) {
 	cfg := &heartbeatConfig{
-		deadlineWindow:  24 * time.Hour,
-		decayThreshold:  0.4,
-		importanceFloor: 0.4,
-		maxResults:      20,
-		minConfidence:   0.5,
-		checks:          allChecks,
+		deadlineWindow:   24 * time.Hour,
+		decayThreshold:   0.4,
+		importanceFloor:  0.4,
+		maxResults:       20,
+		minConfidence:    0.5,
+		checks:           allChecks,
+		autoAckScheduled: true,
 	}
 	for _, opt := range opts {
 		opt(cfg)
@@ -373,8 +377,8 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Descending: true,
 		}))
 		if err == nil {
-			stalePlanCutoff := now.Add(-7 * 24 * time.Hour)   // 7 days
-			deadlineHorizon := now.Add(14 * 24 * time.Hour)   // 14 days
+			stalePlanCutoff := now.Add(-7 * 24 * time.Hour) // 7 days
+			deadlineHorizon := now.Add(14 * 24 * time.Hour) // 14 days
 			for _, m := range pending {
 				if m.Importance < cfg.importanceFloor {
 					continue
@@ -439,16 +443,11 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				if sched.IsDue(lastRun, now) {
 					result.Scheduled = append(result.Scheduled, m)
 
-					// Auto-acknowledge: advance last_accessed_at so the task
-					// doesn't re-fire until the next scheduled interval.
-					_ = k.store.UpdateAccessStats(ctx, []string{m.ID})
-
-					// One-time cleanup: archive cron:once:* memories after they fire.
-					if sched.Type == ScheduleOnce {
-						archivedState := storage.StateArchived
-						_, _ = k.store.UpdateMemory(ctx, m.ID, storage.MemoryUpdate{
-							State: &archivedState,
-						})
+					if cfg.autoAckScheduled && m.ID != "" {
+						// Auto-acknowledge/consume due schedules during heartbeat scan.
+						// In deferred mode, integrations are responsible for calling
+						// AcknowledgeSchedule after successful downstream delivery.
+						_ = k.AcknowledgeSchedule(ctx, m.ID)
 					}
 
 					if len(result.Scheduled) >= cfg.maxResults {

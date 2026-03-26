@@ -85,14 +85,15 @@ type memoryJSON struct {
 }
 
 type heartbeatCheckRequest struct {
-	EntityID        string  `json:"entity_id"`
-	DeadlineWindow  string  `json:"deadline_window,omitempty"`
-	DecayThreshold  float64 `json:"decay_threshold,omitempty"`
-	ImportanceFloor float64 `json:"importance_floor,omitempty"`
-	MaxResults      int     `json:"max_results,omitempty"`
-	AgentID         string  `json:"agent_id,omitempty"`
-	TeamID          string  `json:"team_id,omitempty"`
-	VirtualNow      string  `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
+	EntityID         string  `json:"entity_id"`
+	DeadlineWindow   string  `json:"deadline_window,omitempty"`
+	DecayThreshold   float64 `json:"decay_threshold,omitempty"`
+	ImportanceFloor  float64 `json:"importance_floor,omitempty"`
+	MaxResults       int     `json:"max_results,omitempty"`
+	AgentID          string  `json:"agent_id,omitempty"`
+	TeamID           string  `json:"team_id,omitempty"`
+	VirtualNow       string  `json:"virtual_now,omitempty"`        // ISO8601 timestamp to override time.Now() for signal computation
+	AutoAckScheduled *bool   `json:"auto_ack_scheduled,omitempty"` // nil=default(true), false=defer ack to integration layer
 }
 
 type heartbeatCheckResponse struct {
@@ -147,6 +148,9 @@ type heartbeatContextRequest struct {
 
 	// Virtual time override for demo recording
 	VirtualNow string `json:"virtual_now,omitempty"` // ISO8601 timestamp to override time.Now() for signal computation
+
+	// Schedule ack behavior override
+	AutoAckScheduled *bool `json:"auto_ack_scheduled,omitempty"` // nil=default(true), false=defer ack to integration layer
 }
 
 type heartbeatAnalysisJSON struct {
