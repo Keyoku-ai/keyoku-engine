@@ -215,6 +215,33 @@ func (s *SQLiteStore) GetRecentActDecisions(ctx context.Context, entityID, agent
 	return actions, rows.Err()
 }
 
+// GetRecentDecisions returns all heartbeat decisions (act + suppress) within the window.
+// Used for state-aware dedup: suppressed signals leave a footprint so that state
+// transitions (e.g., resolved → active via bug) don't reset the dedup window.
+func (s *SQLiteStore) GetRecentDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error) {
+	cutoff := time.Now().UTC().Add(-since).Format(time.RFC3339)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, entity_id, agent_id, acted_at, trigger_category, signal_fingerprint, decision, urgency_tier, llm_should_act, signal_summary, total_signals, user_responded, topic_entities, state_snapshot, signal_summary_hash
+		FROM heartbeat_actions
+		WHERE entity_id = ? AND agent_id = ? AND acted_at > ?
+		ORDER BY acted_at DESC`,
+		entityID, agentID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var actions []*HeartbeatAction
+	for rows.Next() {
+		a, err := s.scanHeartbeatAction(rows)
+		if err != nil {
+			continue
+		}
+		actions = append(actions, a)
+	}
+	return actions, rows.Err()
+}
+
 func (s *SQLiteStore) GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 	var total, responded int

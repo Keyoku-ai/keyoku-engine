@@ -574,6 +574,9 @@ func (m *testStore) GetRecentActDecisions(ctx context.Context, entityID, agentID
 	}
 	return nil, nil
 }
+func (m *testStore) GetRecentDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+	return nil, nil
+}
 func (m *testStore) GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) {
 	if m.getResponseRateFn != nil {
 		return m.getResponseRateFn(ctx, entityID, agentID, days)

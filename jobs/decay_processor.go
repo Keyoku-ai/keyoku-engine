@@ -98,6 +98,30 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 				continue
 			}
 
+			// Resolved fence: resolved memories can only move forward (to archived/deleted),
+			// never back to active or stale. This prevents "zombie" resurfacing where a
+			// resolved item re-enters the heartbeat cycle due to access-burst importance
+			// boosts or high decay factors from recent access.
+			if mem.State == storage.StateResolved {
+				decayFactor := engine.CalculateDecayFactorWithAccess(mem.LastAccessedAt, mem.Stability, mem.AccessCount)
+				targetState := engine.DetermineDecayState(decayFactor)
+				newState := storage.MemoryState(targetState)
+				// Only allow forward transitions: resolved → archived or resolved → deleted
+				if newState == storage.StateArchived || newState == storage.StateDeleted {
+					reason := fmt.Sprintf("resolved memory decay factor %.3f below archive threshold (access_count=%d)", decayFactor, mem.AccessCount)
+					if newState == storage.StateArchived {
+						transitionsToArchive++
+					}
+					transitions = append(transitions, storage.StateTransition{
+						MemoryID: mem.ID,
+						NewState: newState,
+						Reason:   reason,
+					})
+				}
+				// Skip importance boosting for resolved memories
+				continue
+			}
+
 			// Use access-aware decay: frequently accessed memories resist decay.
 			decayFactor := engine.CalculateDecayFactorWithAccess(mem.LastAccessedAt, mem.Stability, mem.AccessCount)
 			targetState := engine.DetermineDecayState(decayFactor)

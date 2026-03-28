@@ -502,6 +502,9 @@ func (m *mockStore) UpdateHeartbeatActionResponse(_ context.Context, _ string, _
 func (m *mockStore) GetRecentActDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
 	return nil, nil
 }
+func (m *mockStore) GetRecentDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+	return nil, nil
+}
 func (m *mockStore) GetResponseRate(_ context.Context, _, _ string, _ int) (float64, int, error) {
 	return 1.0, 0, nil
 }
