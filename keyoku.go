@@ -1088,6 +1088,115 @@ func (k *Keyoku) CancelSchedule(ctx context.Context, memoryID string) error {
 	return nil
 }
 
+// ScheduleDiagnostic contains observability data for a single scheduled memory.
+type ScheduleDiagnostic struct {
+	MemoryID    string    `json:"memory_id"`
+	Content     string    `json:"content"`
+	CronTag     string    `json:"cron_tag"`
+	State       string    `json:"state"`        // active, stale, archived, resolved
+	CreatedAt   time.Time `json:"created_at"`
+	LastRunAt   time.Time `json:"last_run_at"`  // last_accessed_at or created_at
+	NextDueAt   time.Time `json:"next_due_at"`  // when it will next fire (zero if expired)
+	IsDueNow    bool      `json:"is_due_now"`
+	MissedWindow bool     `json:"missed_window"` // true if due but past grace period
+	Importance  float64   `json:"importance"`
+	AccessCount int       `json:"access_count"`
+	Reason      string    `json:"reason"`       // human-readable explanation
+}
+
+// DiagnoseSchedules returns lifecycle diagnostics for all cron-tagged memories
+// belonging to an entity. This answers "why didn't my reminder fire?" by showing
+// the state, due time, and any issues for each schedule.
+func (k *Keyoku) DiagnoseSchedules(ctx context.Context, entityID, agentID string) ([]ScheduleDiagnostic, error) {
+	// Fetch all cron memories in any non-deleted state
+	states := []storage.MemoryState{storage.StateActive, storage.StateStale, storage.StateResolved, storage.StateArchived}
+	var allScheduled []*Memory
+	for _, state := range states {
+		mems, err := k.store.QueryMemories(ctx, storage.MemoryQuery{
+			EntityID:  entityID,
+			AgentID:   agentID,
+			TagPrefix: "cron:",
+			States:    []storage.MemoryState{state},
+			Limit:     100,
+		})
+		if err != nil {
+			continue
+		}
+		allScheduled = append(allScheduled, mems...)
+	}
+
+	now := time.Now()
+	var diagnostics []ScheduleDiagnostic
+
+	for _, m := range allScheduled {
+		sched, parseErr := ParseScheduleFromTags(m.Tags)
+		cronTag := ""
+		for _, tag := range m.Tags {
+			if strings.HasPrefix(tag, "cron:") {
+				cronTag = tag
+				break
+			}
+		}
+
+		diag := ScheduleDiagnostic{
+			MemoryID:    m.ID,
+			Content:     m.Content,
+			CronTag:     cronTag,
+			State:       string(m.State),
+			CreatedAt:   m.CreatedAt,
+			Importance:  m.Importance,
+			AccessCount: m.AccessCount,
+		}
+
+		lastRun := m.CreatedAt
+		if m.LastAccessedAt != nil {
+			lastRun = *m.LastAccessedAt
+		}
+		diag.LastRunAt = lastRun
+
+		if parseErr != nil || sched == nil {
+			diag.Reason = fmt.Sprintf("invalid cron tag: %v", parseErr)
+			diagnostics = append(diagnostics, diag)
+			continue
+		}
+
+		if m.State != storage.StateActive {
+			diag.Reason = fmt.Sprintf("not active (state=%s) — will not fire until recovered to active", m.State)
+			diagnostics = append(diagnostics, diag)
+			continue
+		}
+
+		nextDue := sched.NextRun(lastRun)
+		diag.NextDueAt = nextDue
+
+		if nextDue.IsZero() {
+			diag.Reason = "one-shot schedule expired — no future runs"
+			diagnostics = append(diagnostics, diag)
+			continue
+		}
+
+		diag.IsDueNow = !now.Before(nextDue)
+
+		if diag.IsDueNow {
+			grace := scheduleGracePeriod(sched)
+			if now.Sub(nextDue) > grace {
+				diag.MissedWindow = true
+				diag.Reason = fmt.Sprintf("due since %s (missed by %s) — heartbeat may not have been woken",
+					nextDue.Format(time.RFC3339), now.Sub(nextDue).Truncate(time.Minute))
+			} else {
+				diag.Reason = "due now — waiting for next heartbeat cycle to surface"
+			}
+		} else {
+			diag.Reason = fmt.Sprintf("next due at %s (in %s)",
+				nextDue.Format(time.RFC3339), nextDue.Sub(now).Truncate(time.Minute))
+		}
+
+		diagnostics = append(diagnostics, diag)
+	}
+
+	return diagnostics, nil
+}
+
 // UpdateTags sets the tags on a memory, replacing any existing tags.
 func (k *Keyoku) UpdateTags(ctx context.Context, memoryID string, tags []string) error {
 	_, err := k.store.UpdateMemory(ctx, memoryID, storage.MemoryUpdate{

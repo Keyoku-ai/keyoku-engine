@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
@@ -724,5 +725,147 @@ func TestEncodeEmbeddingBytes(t *testing.T) {
 	encoded := encodeEmbeddingBytes(embedding)
 	if len(encoded) != 12 { // 3 * 4 bytes
 		t.Errorf("encoded length = %d, want 12", len(encoded))
+	}
+}
+
+// --- DiagnoseSchedules ---
+
+func TestDiagnoseSchedules_ActiveDueNow(t *testing.T) {
+	now := time.Now()
+	lastAccess := now.Add(-25 * time.Hour) // daily schedule, last accessed 25h ago
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if q.States[0] == storage.StateActive {
+				return []*storage.Memory{{
+					ID: "sched-1", Content: "Daily standup", State: storage.StateActive,
+					Tags: storage.StringSlice{"cron:daily:09:00"}, Importance: 0.8,
+					CreatedAt: now.Add(-7 * 24 * time.Hour), LastAccessedAt: &lastAccess,
+				}}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := newTestKeyokuWithLogger(store)
+
+	diags, err := k.DiagnoseSchedules(context.Background(), "user-1", "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(diags) == 0 {
+		t.Fatal("expected at least 1 diagnostic")
+	}
+	if diags[0].State != "active" {
+		t.Errorf("state = %q, want active", diags[0].State)
+	}
+	if diags[0].CronTag != "cron:daily:09:00" {
+		t.Errorf("cron_tag = %q, want cron:daily:09:00", diags[0].CronTag)
+	}
+}
+
+func TestDiagnoseSchedules_ArchivedOneShot(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if q.States[0] == storage.StateArchived {
+				return []*storage.Memory{{
+					ID: "sched-once", Content: "One-shot reminder", State: storage.StateArchived,
+					Tags: storage.StringSlice{"cron:once:2026-01-01T08:00:00"}, Importance: 0.1,
+					CreatedAt: now.Add(-90 * 24 * time.Hour),
+				}}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := newTestKeyokuWithLogger(store)
+
+	diags, err := k.DiagnoseSchedules(context.Background(), "user-1", "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(diags) == 0 {
+		t.Fatal("expected at least 1 diagnostic")
+	}
+	if diags[0].State != "archived" {
+		t.Errorf("state = %q, want archived", diags[0].State)
+	}
+	if !strings.Contains(diags[0].Reason, "not active") {
+		t.Errorf("reason = %q, want 'not active' explanation", diags[0].Reason)
+	}
+}
+
+func TestDiagnoseSchedules_InvalidCronTag(t *testing.T) {
+	now := time.Now()
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			if q.States[0] == storage.StateActive {
+				return []*storage.Memory{{
+					ID: "sched-bad", Content: "Bad cron", State: storage.StateActive,
+					Tags: storage.StringSlice{"cron:invalid:format"}, Importance: 0.8,
+					CreatedAt: now,
+				}}, nil
+			}
+			return nil, nil
+		},
+	}
+	k := newTestKeyokuWithLogger(store)
+
+	diags, err := k.DiagnoseSchedules(context.Background(), "user-1", "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(diags) == 0 {
+		t.Fatal("expected at least 1 diagnostic")
+	}
+	if !strings.Contains(diags[0].Reason, "invalid cron tag") {
+		t.Errorf("reason = %q, want 'invalid cron tag'", diags[0].Reason)
+	}
+}
+
+// --- Cron resurfacing cooldown ---
+
+func TestScheduled_SurfacingCooldown(t *testing.T) {
+	now := time.Now()
+	lastAccess := now.Add(-2 * time.Hour) // hourly schedule, last accessed 2h ago = due
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, q storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{{
+				ID: "cron-hourly", Content: "Hourly check", State: storage.StateActive,
+				Tags: storage.StringSlice{"cron:hourly"}, Importance: 0.8,
+				CreatedAt: now.Add(-7 * 24 * time.Hour), LastAccessedAt: &lastAccess,
+			}}, nil
+		},
+		// Return this memory as recently surfaced — should suppress re-fire
+		getRecentlySurfacedMemoryIDsFn: func(_ context.Context, _, _ string, _ time.Duration) ([]string, error) {
+			return []string{"cron-hourly"}, nil
+		},
+	}
+	k := &Keyoku{store: store, eventBus: NewEventBus(false), logger: slog.Default()}
+
+	result, err := k.HeartbeatCheck(context.Background(), "entity-1",
+		WithChecks(CheckScheduled))
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(result.Scheduled) != 0 {
+		t.Errorf("Scheduled count = %d, want 0 (suppressed by surfacing cooldown)", len(result.Scheduled))
+	}
+}
+
+// --- scheduleGracePeriod ---
+
+func TestScheduleGracePeriod(t *testing.T) {
+	hourly := &Schedule{Type: ScheduleInterval, Interval: 1 * time.Hour}
+	if g := scheduleGracePeriod(hourly); g != 2*time.Hour {
+		t.Errorf("hourly grace = %v, want 2h", g)
+	}
+
+	daily := &Schedule{Type: ScheduleDaily, Hour: 9, Minute: 0}
+	if g := scheduleGracePeriod(daily); g != 24*time.Hour {
+		t.Errorf("daily grace = %v, want 24h", g)
+	}
+
+	once := &Schedule{Type: ScheduleOnce}
+	if g := scheduleGracePeriod(once); g != 24*time.Hour {
+		t.Errorf("once grace = %v, want 24h", g)
 	}
 }
