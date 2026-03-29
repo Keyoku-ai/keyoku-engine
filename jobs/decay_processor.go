@@ -108,8 +108,9 @@ func (p *DecayProcessor) Process(ctx context.Context) (*JobResult, error) {
 				newState := storage.MemoryState(targetState)
 				// Only allow forward transitions: resolved → archived or resolved → deleted
 				if newState == storage.StateArchived || newState == storage.StateDeleted {
-					reason := fmt.Sprintf("resolved memory decay factor %.3f below archive threshold (access_count=%d)", decayFactor, mem.AccessCount)
+					reason := fmt.Sprintf("resolved memory decay factor %.3f below delete threshold %.3f (access_count=%d)", decayFactor, engine.DecayThresholdDelete, mem.AccessCount)
 					if newState == storage.StateArchived {
+						reason = fmt.Sprintf("resolved memory decay factor %.3f below archive threshold %.3f (access_count=%d)", decayFactor, p.config.ThresholdArchive, mem.AccessCount)
 						transitionsToArchive++
 					}
 					transitions = append(transitions, storage.StateTransition{

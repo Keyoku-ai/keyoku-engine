@@ -970,9 +970,9 @@ var metaProcessPrefixes = []string{
 // isMetaProcessContent returns true if the memory content looks like internal
 // process chatter rather than actionable user-facing work.
 func isMetaProcessContent(content string) bool {
-	lower := strings.ToLower(content)
+	lower := strings.TrimSpace(strings.ToLower(content))
 	for _, prefix := range metaProcessPrefixes {
-		if strings.HasPrefix(lower, prefix) || strings.Contains(lower, prefix) {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}

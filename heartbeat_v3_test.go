@@ -866,6 +866,27 @@ func TestContentDedup_SuppressionFootprintSameFingerprintSuppresses(t *testing.T
 	}
 }
 
+func TestIsMetaProcessContent_StrictPrefixMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "internal monitoring prefix", content: "Monitoring release risk for regressions", want: true},
+		{name: "internal cleanup prefix after trim", content: "  cleanup stale reminders from earlier runs", want: true},
+		{name: "user mention of monitoring in middle", content: "Plan: build a monitoring dashboard for the team", want: false},
+		{name: "user mention of cleanup in middle", content: "Need to finish cleanup on the kitchen project", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMetaProcessContent(tt.content); got != tt.want {
+				t.Errorf("isMetaProcessContent(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Helper function tests ---
 
 func TestHashSignalSummary_Deterministic(t *testing.T) {
