@@ -824,6 +824,48 @@ func TestContentDedup_EntityOverlapDifferentFingerprint_NoSuppress(t *testing.T)
 	}
 }
 
+func TestContentDedup_SuppressionFootprintSameFingerprintSuppresses(t *testing.T) {
+	var seenActWindow time.Duration
+	var seenSuppressionWindow time.Duration
+
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, window time.Duration) ([]*storage.HeartbeatAction, error) {
+			seenActWindow = window
+			return nil, nil
+		},
+		getRecentDecisionsFn: func(_ context.Context, _, _ string, window time.Duration) ([]*storage.HeartbeatAction, error) {
+			seenSuppressionWindow = window
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-75 * time.Minute),
+					Decision:          "suppress_topic_repeat",
+					SignalFingerprint: "fp-zombie",
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	suppressed := k.shouldSuppressTopicRepeat(
+		context.Background(),
+		"owner",
+		"agent",
+		[]string{"project-a"},
+		"newhash-after-state-change",
+		"fp-zombie",
+		1*time.Hour,
+	)
+	if !suppressed {
+		t.Fatal("shouldSuppressTopicRepeat should suppress when a recent non-act decision has the same fingerprint")
+	}
+	if seenActWindow != 1*time.Hour {
+		t.Errorf("act window = %v, want 1h", seenActWindow)
+	}
+	if seenSuppressionWindow != 2*time.Hour {
+		t.Errorf("suppression window = %v, want 2h", seenSuppressionWindow)
+	}
+}
+
 // --- Helper function tests ---
 
 func TestHashSignalSummary_Deterministic(t *testing.T) {

@@ -131,6 +131,7 @@ type testStore struct {
 	pingFn                            func(context.Context) error
 	getLastHeartbeatActionFn          func(context.Context, string, string, string) (*storage.HeartbeatAction, error)
 	getRecentActDecisionsFn           func(context.Context, string, string, time.Duration) ([]*storage.HeartbeatAction, error)
+	getRecentDecisionsFn              func(context.Context, string, string, time.Duration) ([]*storage.HeartbeatAction, error)
 	getMemoryCountForEntityFn         func(context.Context, string) (int, error)
 	getNudgeCountTodayFn              func(context.Context, string, string) (int, error)
 	recordHeartbeatActionFn           func(context.Context, *storage.HeartbeatAction) error
@@ -574,7 +575,10 @@ func (m *testStore) GetRecentActDecisions(ctx context.Context, entityID, agentID
 	}
 	return nil, nil
 }
-func (m *testStore) GetRecentDecisions(_ context.Context, _, _ string, _ time.Duration) ([]*storage.HeartbeatAction, error) {
+func (m *testStore) GetRecentDecisions(ctx context.Context, entityID, agentID string, d time.Duration) ([]*storage.HeartbeatAction, error) {
+	if m.getRecentDecisionsFn != nil {
+		return m.getRecentDecisionsFn(ctx, entityID, agentID, d)
+	}
 	return nil, nil
 }
 func (m *testStore) GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) {
