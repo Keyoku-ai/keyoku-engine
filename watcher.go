@@ -6,6 +6,7 @@ package keyoku
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -132,13 +133,14 @@ type Watcher struct {
 	deliverer Deliverer
 
 	// Adaptive interval state
-	lastResult   *HeartbeatResult
-	lastActTime  time.Time
-	nextTickAt   time.Time
-	lastFactors  *IntervalFactors
-	lastCheckAt  time.Time
-	lastDecision string
-	tickHistory  []TickRecord
+	lastResult       *HeartbeatResult
+	lastActTime      time.Time
+	nextTickAt       time.Time
+	lastFactors      *IntervalFactors
+	lastCheckAt      time.Time
+	lastDecision     string
+	tickHistory      []TickRecord
+	deliveryFailures int // consecutive delivery failures for backoff
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -407,6 +409,19 @@ func (w *Watcher) computeNextInterval() time.Duration {
 		interval *= 0.5
 	}
 
+	// Factor 5: Delivery failure backoff — exponential (2x, 4x, 8x...) capped at 32x
+	w.mu.RLock()
+	failures := w.deliveryFailures
+	w.mu.RUnlock()
+	if failures > 0 {
+		backoff := math.Pow(2, float64(min(failures, 5))) // cap at 2^5 = 32x
+		interval *= backoff
+		w.logger.Warn("delivery failure backoff applied",
+			"consecutive_failures", failures,
+			"backoff_mult", backoff,
+		)
+	}
+
 	// Clamp to [min, max]
 	minInterval := w.config.MinInterval
 	if minInterval <= 0 {
@@ -561,15 +576,20 @@ func (w *Watcher) checkAll() {
 
 		// Deliver via external agent if configured
 		if w.deliverer != nil {
-			w.mu.Lock()
-			w.lastActTime = time.Now()
-			w.mu.Unlock()
 			deliverErr := w.deliverer.Deliver(w.ctx, entityID, result)
-			if deliverErr != nil {
-				w.logger.Error("heartbeat delivery failed", "entity", entityID, "error", deliverErr)
-			}
 			delivered := deliverErr == nil
 			w.mu.Lock()
+			if delivered {
+				w.lastActTime = time.Now()
+				w.deliveryFailures = 0
+			} else {
+				w.deliveryFailures++
+				w.logger.Error("heartbeat delivery failed",
+					"entity", entityID,
+					"error", deliverErr,
+					"consecutive_failures", w.deliveryFailures,
+				)
+			}
 			w.appendTick(TickRecord{
 				Timestamp:      time.Now(),
 				EntityID:       entityID,
