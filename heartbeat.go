@@ -388,6 +388,11 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				if memoryHasCronTag(m.Tags) {
 					continue
 				}
+				// Skip meta-process content — internal agent bookkeeping (monitoring,
+				// syncing, cleanup) should not surface as user-facing work items.
+				if isMetaProcessContent(m.Content) {
+					continue
+				}
 				// Recency gate: only include if updated within 7 days OR has deadline within 14 days
 				// Zero UpdatedAt = not set, treat as recent
 				recentEnough := m.UpdatedAt.IsZero() || m.UpdatedAt.After(stalePlanCutoff)
@@ -946,6 +951,27 @@ func filterByConfidence(memories []*Memory, minConfidence float64) []*Memory {
 func memoryHasCronTag(tags []string) bool {
 	for _, tag := range tags {
 		if strings.HasPrefix(tag, "cron:") {
+			return true
+		}
+	}
+	return false
+}
+
+// metaProcessPrefixes are internal process states that should not surface in
+// user-facing heartbeat. These represent agent bookkeeping, not actionable work.
+var metaProcessPrefixes = []string{
+	"monitoring ", "syncing ", "cleanup ", "standby",
+	"preparing summary", "preparing planning", "wrapping up",
+	"finalizing cleanup", "keeping an eye on",
+	"watching ", "tracking progress on",
+}
+
+// isMetaProcessContent returns true if the memory content looks like internal
+// process chatter rather than actionable user-facing work.
+func isMetaProcessContent(content string) bool {
+	lower := strings.TrimSpace(strings.ToLower(content))
+	for _, prefix := range metaProcessPrefixes {
+		if strings.HasPrefix(lower, prefix) {
 			return true
 		}
 	}

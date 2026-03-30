@@ -6,6 +6,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,4 +287,66 @@ func TestDecayProcessor_Process_ResultDetails(t *testing.T) {
 	if _, ok := result.Details["transitions_to_archive"]; !ok {
 		t.Error("expected transitions_to_archive in details")
 	}
+}
+
+func TestDecayProcessor_Process_ResolvedTransitionsUseStateSpecificReasons(t *testing.T) {
+	now := time.Now()
+	oldArchive := now.Add(-365 * 24 * time.Hour)
+	oldDelete := now.Add(-1000 * 24 * time.Hour)
+
+	var transitions []storage.StateTransition
+	store := &mockStore{
+		getActiveMemoriesForDecayFn: func(_ context.Context, _, offset int) ([]*storage.Memory, error) {
+			if offset > 0 {
+				return nil, nil
+			}
+			return []*storage.Memory{
+				{ID: "resolved-archive", State: storage.StateResolved, LastAccessedAt: &oldArchive, Stability: 90},
+				{ID: "resolved-delete", State: storage.StateResolved, LastAccessedAt: &oldDelete, Stability: 30},
+			}, nil
+		},
+		batchTransitionStatesFn: func(_ context.Context, t []storage.StateTransition) (int, error) {
+			transitions = append(transitions, t...)
+			return len(t), nil
+		},
+	}
+
+	p := NewDecayProcessor(store, nil, DefaultDecayJobConfig())
+	if _, err := p.Process(context.Background()); err != nil {
+		t.Fatalf("Process error = %v", err)
+	}
+
+	if len(transitions) != 2 {
+		t.Fatalf("transition count = %d, want 2", len(transitions))
+	}
+
+	for _, tr := range transitions {
+		switch tr.MemoryID {
+		case "resolved-archive":
+			if tr.NewState != storage.StateArchived {
+				t.Errorf("resolved-archive new state = %q, want %q", tr.NewState, storage.StateArchived)
+			}
+			if tr.Reason == "" || !containsAll(tr.Reason, "archive threshold", "0.100") {
+				t.Errorf("resolved-archive reason = %q, want archive threshold wording", tr.Reason)
+			}
+		case "resolved-delete":
+			if tr.NewState != storage.StateDeleted {
+				t.Errorf("resolved-delete new state = %q, want %q", tr.NewState, storage.StateDeleted)
+			}
+			if tr.Reason == "" || !containsAll(tr.Reason, "delete threshold", "0.010") {
+				t.Errorf("resolved-delete reason = %q, want delete threshold wording", tr.Reason)
+			}
+		default:
+			t.Errorf("unexpected transition memory id %q", tr.MemoryID)
+		}
+	}
+}
+
+func containsAll(s string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(s, part) {
+			return false
+		}
+	}
+	return true
 }
