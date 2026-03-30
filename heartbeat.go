@@ -436,6 +436,15 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 			Limit:    cfg.maxResults * 5,
 		}))
 		if err == nil {
+			// Surfacing cooldown: prevent cron resurfacing loops where a due
+			// memory fires repeatedly because the integration hasn't acked yet.
+			cronSurfaceCooldown := 30 * time.Minute
+			surfacedIDs, _ := k.store.GetRecentlySurfacedMemoryIDs(ctx, entityID, cfg.agentID, cronSurfaceCooldown)
+			surfacedSet := make(map[string]bool, len(surfacedIDs))
+			for _, id := range surfacedIDs {
+				surfacedSet[id] = true
+			}
+
 			for _, m := range allActive {
 				sched, err := ParseScheduleFromTags(m.Tags)
 				if err != nil || sched == nil {
@@ -445,19 +454,52 @@ func (k *Keyoku) HeartbeatCheck(ctx context.Context, entityID string, opts ...He
 				if m.LastAccessedAt != nil {
 					lastRun = *m.LastAccessedAt
 				}
-				if sched.IsDue(lastRun, now) {
-					result.Scheduled = append(result.Scheduled, m)
+				if !sched.IsDue(lastRun, now) {
+					continue
+				}
 
-					if cfg.autoAckScheduled && m.ID != "" {
-						// Auto-acknowledge/consume due schedules during heartbeat scan.
-						// In deferred mode, integrations are responsible for calling
-						// AcknowledgeSchedule after successful downstream delivery.
-						_ = k.AcknowledgeSchedule(ctx, m.ID)
-					}
+				// Prevent cron resurfacing loop: if this memory was recently
+				// surfaced but not yet acked, don't fire it again.
+				if surfacedSet[m.ID] {
+					continue
+				}
 
-					if len(result.Scheduled) >= cfg.maxResults {
-						break
+				// Missed-window detection: if a schedule became due long ago
+				// (more than 2x its interval or 24h for fixed-time schedules),
+				// still surface it but tag it so delivery can note the delay.
+				expectedDue := sched.NextRun(lastRun)
+				if !expectedDue.IsZero() && now.Sub(expectedDue) > scheduleGracePeriod(sched) {
+					if m.ImportanceFactors == nil {
+						m.ImportanceFactors = []string{}
 					}
+					m.ImportanceFactors = append(m.ImportanceFactors,
+						fmt.Sprintf("missed_window:due_at=%s,fired_at=%s",
+							expectedDue.Format(time.RFC3339),
+							now.Format(time.RFC3339)))
+				}
+
+				result.Scheduled = append(result.Scheduled, m)
+
+				// Auto-acknowledge: in default mode, advance last_accessed_at
+				// so the task doesn't re-fire until the next scheduled interval.
+				// In deferred mode (autoAckScheduled=false), integrations are
+				// responsible for calling AcknowledgeSchedule after delivery.
+				if cfg.autoAckScheduled && m.ID != "" {
+					_ = k.AcknowledgeSchedule(ctx, m.ID)
+				}
+
+				// One-time cleanup: archive cron:once:* memories after they fire.
+				// Only in auto-ack mode — in deferred mode, the integration
+				// handles archival after confirmed delivery.
+				if cfg.autoAckScheduled && sched.Type == ScheduleOnce {
+					archivedState := storage.StateArchived
+					_, _ = k.store.UpdateMemory(ctx, m.ID, storage.MemoryUpdate{
+						State: &archivedState,
+					})
+				}
+
+				if len(result.Scheduled) >= cfg.maxResults {
+					break
 				}
 			}
 		}
@@ -946,6 +988,21 @@ func filterByConfidence(memories []*Memory, minConfidence float64) []*Memory {
 }
 
 // --- helpers ---
+
+// scheduleGracePeriod returns how long past-due a schedule can be before it's
+// considered a missed window. Interval-based schedules use 2x their interval;
+// fixed-time schedules (daily, weekly, etc.) use 24h as a generous buffer.
+func scheduleGracePeriod(sched *Schedule) time.Duration {
+	switch sched.Type {
+	case ScheduleInterval:
+		return sched.Interval * 2
+	case ScheduleOnce:
+		return 24 * time.Hour
+	default:
+		// Fixed-time schedules (daily, weekly, weekdays, monthly)
+		return 24 * time.Hour
+	}
+}
 
 // memoryHasCronTag returns true if any tag starts with "cron:".
 func memoryHasCronTag(tags []string) bool {

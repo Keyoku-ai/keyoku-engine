@@ -190,6 +190,7 @@ func main() {
 	mux.HandleFunc("PUT /api/v1/schedule/", handlers.HandleUpdateSchedule)
 	mux.HandleFunc("DELETE /api/v1/schedule/", handlers.HandleCancelSchedule)
 	mux.HandleFunc("GET /api/v1/scheduled", handlers.HandleListScheduled)
+	mux.HandleFunc("GET /api/v1/schedule/diagnose", handlers.HandleDiagnoseSchedules)
 	mux.HandleFunc("PUT /api/v1/memories/{id}/tags", handlers.HandleUpdateTags)
 	mux.HandleFunc("PUT /api/v1/memories/{id}", handlers.HandleUpdateMemory)
 	mux.HandleFunc("POST /api/v1/memories/{id}/resolve", handlers.HandleResolveMemory)

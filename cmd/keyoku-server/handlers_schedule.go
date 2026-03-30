@@ -111,6 +111,25 @@ func (h *Handlers) HandleUpdateSchedule(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, toMemoryJSON(mem))
 }
 
+// HandleDiagnoseSchedules returns lifecycle diagnostics for all scheduled memories.
+// Answers "why didn't my reminder fire?" with state, due time, and any issues.
+func (h *Handlers) HandleDiagnoseSchedules(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity_id")
+	if err := validateEntityID(entityID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+
+	diagnostics, err := h.k.DiagnoseSchedules(r.Context(), entityID, agentID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, diagnostics)
+}
+
 // HandleCancelSchedule archives a scheduled memory, cancelling the schedule.
 func (h *Handlers) HandleCancelSchedule(w http.ResponseWriter, r *http.Request) {
 	id, ok := extractPathID(r, "/api/v1/schedule/")

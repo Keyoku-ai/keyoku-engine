@@ -136,6 +136,7 @@ type testStore struct {
 	getNudgeCountTodayFn              func(context.Context, string, string) (int, error)
 	recordHeartbeatActionFn           func(context.Context, *storage.HeartbeatAction) error
 	getResponseRateFn                 func(context.Context, string, string, int) (float64, int, error)
+	getRecentlySurfacedMemoryIDsFn    func(context.Context, string, string, time.Duration) ([]string, error)
 }
 
 func (m *testStore) CreateMemory(ctx context.Context, mem *storage.Memory) error {
@@ -590,7 +591,10 @@ func (m *testStore) GetResponseRate(ctx context.Context, entityID, agentID strin
 func (m *testStore) RecordSurfacedMemories(_ context.Context, _, _ string, _ []string) error {
 	return nil
 }
-func (m *testStore) GetRecentlySurfacedMemoryIDs(_ context.Context, _, _ string, _ time.Duration) ([]string, error) {
+func (m *testStore) GetRecentlySurfacedMemoryIDs(ctx context.Context, entityID, agentID string, d time.Duration) ([]string, error) {
+	if m.getRecentlySurfacedMemoryIDsFn != nil {
+		return m.getRecentlySurfacedMemoryIDsFn(ctx, entityID, agentID, d)
+	}
 	return nil, nil
 }
 func (m *testStore) CleanupOldSurfacedMemories(_ context.Context, _ time.Duration) error { return nil }
