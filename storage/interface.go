@@ -126,6 +126,7 @@ type Store interface {
 	GetHeartbeatActionsForResponseCheck(ctx context.Context, entityID string, minAge time.Duration) ([]*HeartbeatAction, error)
 	UpdateHeartbeatActionResponse(ctx context.Context, actionID string, responded bool) error
 	GetRecentActDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error)
+	GetRecentDecisions(ctx context.Context, entityID, agentID string, since time.Duration) ([]*HeartbeatAction, error)
 	GetResponseRate(ctx context.Context, entityID, agentID string, days int) (float64, int, error) // rate, total, error
 
 	// Content rotation tracking

@@ -653,6 +653,12 @@ func TestListScheduled_StoreError(t *testing.T) {
 func TestAcknowledgeSchedule_HappyPath(t *testing.T) {
 	var ackedIDs []string
 	store := &testStore{
+		getMemoryFn: func(_ context.Context, id string) (*storage.Memory, error) {
+			return &storage.Memory{
+				ID:   id,
+				Tags: storage.StringSlice{"cron:daily"},
+			}, nil
+		},
 		updateAccessStatsFn: func(_ context.Context, ids []string) error {
 			ackedIDs = append(ackedIDs, ids...)
 			return nil
@@ -669,6 +675,37 @@ func TestAcknowledgeSchedule_HappyPath(t *testing.T) {
 	}
 }
 
+func TestAcknowledgeSchedule_OnceArchivesMemory(t *testing.T) {
+	archived := false
+	store := &testStore{
+		getMemoryFn: func(_ context.Context, id string) (*storage.Memory, error) {
+			return &storage.Memory{
+				ID:   id,
+				Tags: storage.StringSlice{"cron:once:2030-01-01T00:00:00"},
+			}, nil
+		},
+		updateAccessStatsFn: func(_ context.Context, _ []string) error { return nil },
+		updateMemoryFn: func(_ context.Context, id string, updates storage.MemoryUpdate) (*storage.Memory, error) {
+			if id != "sched-once" {
+				t.Fatalf("id = %s, want sched-once", id)
+			}
+			if updates.State == nil || *updates.State != storage.StateArchived {
+				t.Fatalf("state update = %#v, want archived", updates.State)
+			}
+			archived = true
+			return &storage.Memory{ID: id, State: storage.StateArchived}, nil
+		},
+	}
+
+	k := newTestKeyokuWithLogger(store)
+	if err := k.AcknowledgeSchedule(context.Background(), "sched-once"); err != nil {
+		t.Fatalf("AcknowledgeSchedule error = %v", err)
+	}
+	if !archived {
+		t.Fatal("expected one-shot schedule to be archived on ack")
+	}
+}
+
 // --- Helper tests ---
 
 func TestIsScheduleContentMatch(t *testing.T) {
@@ -677,12 +714,12 @@ func TestIsScheduleContentMatch(t *testing.T) {
 		want bool
 	}{
 		{"Check news every morning", "Check news every morning", true},
-		{"check news every morning", "Check News Every Morning", true},              // case insensitive
-		{"  Check news  ", "Check news", true},                                      // whitespace trimmed
-		{"Check news every morning", "Check weather forecast", false},               // different content
-		{"Check news", "Check news every morning at 8am", true},                     // substring containment
-		{"Send the daily report to the team", "Send the daily report", true},        // substring
-		{"Totally different task A", "Completely unrelated task B", false},           // no match
+		{"check news every morning", "Check News Every Morning", true},       // case insensitive
+		{"  Check news  ", "Check news", true},                               // whitespace trimmed
+		{"Check news every morning", "Check weather forecast", false},        // different content
+		{"Check news", "Check news every morning at 8am", true},              // substring containment
+		{"Send the daily report to the team", "Send the daily report", true}, // substring
+		{"Totally different task A", "Completely unrelated task B", false},   // no match
 	}
 
 	for _, tt := range tests {

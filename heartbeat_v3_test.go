@@ -824,6 +824,69 @@ func TestContentDedup_EntityOverlapDifferentFingerprint_NoSuppress(t *testing.T)
 	}
 }
 
+func TestContentDedup_SuppressionFootprintSameFingerprintSuppresses(t *testing.T) {
+	var seenActWindow time.Duration
+	var seenSuppressionWindow time.Duration
+
+	store := &testStore{
+		getRecentActDecisionsFn: func(_ context.Context, _, _ string, window time.Duration) ([]*storage.HeartbeatAction, error) {
+			seenActWindow = window
+			return nil, nil
+		},
+		getRecentDecisionsFn: func(_ context.Context, _, _ string, window time.Duration) ([]*storage.HeartbeatAction, error) {
+			seenSuppressionWindow = window
+			return []*storage.HeartbeatAction{
+				{
+					ActedAt:           time.Now().Add(-75 * time.Minute),
+					Decision:          "suppress_topic_repeat",
+					SignalFingerprint: "fp-zombie",
+				},
+			}, nil
+		},
+	}
+	k := &Keyoku{store: store}
+
+	suppressed := k.shouldSuppressTopicRepeat(
+		context.Background(),
+		"owner",
+		"agent",
+		[]string{"project-a"},
+		"newhash-after-state-change",
+		"fp-zombie",
+		1*time.Hour,
+	)
+	if !suppressed {
+		t.Fatal("shouldSuppressTopicRepeat should suppress when a recent non-act decision has the same fingerprint")
+	}
+	if seenActWindow != 1*time.Hour {
+		t.Errorf("act window = %v, want 1h", seenActWindow)
+	}
+	if seenSuppressionWindow != 2*time.Hour {
+		t.Errorf("suppression window = %v, want 2h", seenSuppressionWindow)
+	}
+}
+
+func TestIsMetaProcessContent_StrictPrefixMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "internal monitoring prefix", content: "Monitoring release risk for regressions", want: true},
+		{name: "internal cleanup prefix after trim", content: "  cleanup stale reminders from earlier runs", want: true},
+		{name: "user mention of monitoring in middle", content: "Plan: build a monitoring dashboard for the team", want: false},
+		{name: "user mention of cleanup in middle", content: "Need to finish cleanup on the kitchen project", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMetaProcessContent(tt.content); got != tt.want {
+				t.Errorf("isMetaProcessContent(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- Helper function tests ---
 
 func TestHashSignalSummary_Deterministic(t *testing.T) {

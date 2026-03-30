@@ -58,6 +58,9 @@ func (h *Handlers) HandleHeartbeatCheck(w http.ResponseWriter, r *http.Request) 
 			opts = append(opts, keyoku.WithVirtualNow(t))
 		}
 	}
+	if req.AutoAckScheduled != nil {
+		opts = append(opts, keyoku.WithAutoAckScheduled(*req.AutoAckScheduled))
+	}
 
 	result, err := h.k.HeartbeatCheck(r.Context(), req.EntityID, opts...)
 	if err != nil {
@@ -163,6 +166,9 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 			hbOpts = append(hbOpts, keyoku.WithVirtualNow(t))
 		}
 	}
+	if req.AutoAckScheduled != nil {
+		hbOpts = append(hbOpts, keyoku.WithAutoAckScheduled(*req.AutoAckScheduled))
+	}
 
 	// Build optional parameter overrides
 	var params keyoku.HeartbeatParams
@@ -244,12 +250,12 @@ func (h *Handlers) HandleHeartbeatContext(w http.ResponseWriter, r *http.Request
 		DecisionReason:     hbResult.DecisionReason,
 		HighestUrgencyTier: hbResult.HighestUrgencyTier,
 		NudgeContext:       hbResult.NudgeContext,
-		Scheduled:        toMemoryJSONSlice(hbResult.Scheduled),
-		Deadlines:        toMemoryJSONSlice(hbResult.Deadlines),
-		PendingWork:      toMemoryJSONSlice(hbResult.PendingWork),
-		Conflicts:        conflicts,
-		RelevantMemories: relevantMemories,
-		Summary:          hbResult.Summary,
+		Scheduled:          toMemoryJSONSlice(hbResult.Scheduled),
+		Deadlines:          toMemoryJSONSlice(hbResult.Deadlines),
+		PendingWork:        toMemoryJSONSlice(hbResult.PendingWork),
+		Conflicts:          conflicts,
+		RelevantMemories:   relevantMemories,
+		Summary:            hbResult.Summary,
 	}
 
 	// Populate extended signals

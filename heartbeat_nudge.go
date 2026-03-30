@@ -319,23 +319,39 @@ func collectSignalMemoryIDs(result *HeartbeatResult) []string {
 	return ids
 }
 
-// shouldSuppressTopicRepeat checks for topic repetition using two layers:
+// shouldSuppressTopicRepeat checks for topic repetition using three layers:
 // Layer 1: Content hash — exact same summary text = suppress (precise, no false positives)
 // Layer 2: Entity overlap 85% within dedup window (configurable, default 1h) — but ONLY if the
 //          signal fingerprint also matches. This prevents "same project, different work"
 //          from being suppressed. Same entities + different fingerprint = new work on same
 //          project = allow through.
+// Layer 3: Suppression footprint — also check recently SUPPRESSED decisions (not just "act")
+//          to prevent state-transition zombies. When a signal is suppressed and then the
+//          underlying memory transitions state (e.g., decay resets), the fingerprint may
+//          match a recent suppression, which should still block re-surfacing.
 func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentID string, currentEntities []string, currentSummaryHash string, currentFingerprint string, dedupWindow ...time.Duration) bool {
 	window := 1 * time.Hour
 	if len(dedupWindow) > 0 && dedupWindow[0] > 0 {
 		window = dedupWindow[0]
 	}
+
+	// Check both "act" decisions and ALL decisions (including suppressions).
+	// Suppressions use a 2x window to catch state-transition zombies.
 	recentActs, err := k.store.GetRecentActDecisions(ctx, entityID, agentID, window)
-	if err != nil || len(recentActs) == 0 {
+	if err != nil {
+		recentActs = nil
+	}
+	suppressionWindow := window * 2
+	allRecent, err := k.store.GetRecentDecisions(ctx, entityID, agentID, suppressionWindow)
+	if err != nil {
+		allRecent = nil
+	}
+
+	if len(recentActs) == 0 && len(allRecent) == 0 {
 		return false
 	}
 
-	// Layer 1: Content hash match — same summary = same topic, regardless of entities
+	// Layer 1: Content hash match against acted decisions
 	if currentSummaryHash != "" {
 		for _, act := range recentActs {
 			if act.SignalSummaryHash != "" && act.SignalSummaryHash == currentSummaryHash {
@@ -344,35 +360,45 @@ func (k *Keyoku) shouldSuppressTopicRepeat(ctx context.Context, entityID, agentI
 		}
 	}
 
-	// Layer 2: Entity overlap (fallback) — only suppresses when fingerprint also matches.
-	// If the fingerprint changed, the underlying work is different even if the project is the same.
-	if len(currentEntities) == 0 {
-		return false
-	}
-
-	currentSet := make(map[string]bool)
-	for _, id := range currentEntities {
-		currentSet[id] = true
-	}
-
-	for _, act := range recentActs {
-		if len(act.TopicEntities) == 0 {
-			continue
+	// Layer 2: Entity overlap against acted decisions
+	if len(currentEntities) > 0 {
+		currentSet := make(map[string]bool)
+		for _, id := range currentEntities {
+			currentSet[id] = true
 		}
-		// Different fingerprint = different work, even if same entities. Allow through.
-		if currentFingerprint != "" && act.SignalFingerprint != "" && act.SignalFingerprint != currentFingerprint {
-			continue
-		}
-		overlap := 0
-		for _, id := range act.TopicEntities {
-			if currentSet[id] {
-				overlap++
+
+		for _, act := range recentActs {
+			if len(act.TopicEntities) == 0 {
+				continue
+			}
+			if currentFingerprint != "" && act.SignalFingerprint != "" && act.SignalFingerprint != currentFingerprint {
+				continue
+			}
+			overlap := 0
+			for _, id := range act.TopicEntities {
+				if currentSet[id] {
+					overlap++
+				}
+			}
+			if float64(overlap)/float64(len(currentEntities)) > 0.85 {
+				return true
 			}
 		}
-		// 85% overlap + same fingerprint = truly the same topic repeating
-		if float64(overlap)/float64(len(currentEntities)) > 0.85 {
-			return true
+	}
+
+	// Layer 3: Suppression footprint — check if the same fingerprint was recently
+	// suppressed. This catches zombies where a memory's state transitions and the
+	// signal re-enters the pipeline with the same fingerprint.
+	if currentFingerprint != "" {
+		for _, decision := range allRecent {
+			if decision.Decision == "act" {
+				continue // already checked above
+			}
+			if decision.SignalFingerprint != "" && decision.SignalFingerprint == currentFingerprint {
+				return true
+			}
 		}
 	}
+
 	return false
 }

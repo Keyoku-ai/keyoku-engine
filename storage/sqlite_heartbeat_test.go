@@ -182,6 +182,73 @@ func TestGetRecentActDecisions(t *testing.T) {
 	}
 }
 
+// --- GetRecentDecisions ---
+
+func TestGetRecentDecisions(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	setActedAt := func(id string, ts time.Time) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx,
+			`UPDATE heartbeat_actions SET acted_at = ? WHERE id = ?`,
+			ts.Format(time.RFC3339), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldAct := testHeartbeatAction("user-1")
+	oldAct.SignalSummary = "old act"
+	if err := s.RecordHeartbeatAction(ctx, oldAct); err != nil {
+		t.Fatal(err)
+	}
+
+	recentSuppress := testHeartbeatAction("user-1")
+	recentSuppress.Decision = "suppress_stale"
+	recentSuppress.SignalSummary = "recent suppress"
+	if err := s.RecordHeartbeatAction(ctx, recentSuppress); err != nil {
+		t.Fatal(err)
+	}
+
+	recentAct := testHeartbeatAction("user-1")
+	recentAct.SignalSummary = "recent act"
+	if err := s.RecordHeartbeatAction(ctx, recentAct); err != nil {
+		t.Fatal(err)
+	}
+
+	setActedAt(oldAct.ID, now.Add(-2*time.Hour))
+	setActedAt(recentSuppress.ID, now.Add(-10*time.Minute))
+	setActedAt(recentAct.ID, now.Add(-5*time.Minute))
+
+	got, err := s.GetRecentDecisions(ctx, "user-1", "default", 1*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d actions, want 2", len(got))
+	}
+	if got[0].ID != recentAct.ID || got[1].ID != recentSuppress.ID {
+		t.Fatalf("unexpected order: got %q then %q", got[0].SignalSummary, got[1].SignalSummary)
+	}
+	if got[0].ActedAt.Before(got[1].ActedAt) {
+		t.Fatalf("expected descending acted_at, got %s then %s", got[0].ActedAt, got[1].ActedAt)
+	}
+	decisions := map[string]bool{
+		"act":            false,
+		"suppress_stale": false,
+	}
+	for _, a := range got {
+		decisions[a.Decision] = true
+		if a.ID == oldAct.ID {
+			t.Fatal("expected old decision to be excluded from window")
+		}
+	}
+	if !decisions["act"] || !decisions["suppress_stale"] {
+		t.Fatalf("expected act and suppress decisions, got %+v", decisions)
+	}
+}
+
 // --- GetNudgeCountToday ---
 
 func TestGetNudgeCountToday(t *testing.T) {

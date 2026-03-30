@@ -841,10 +841,39 @@ func (as *AgentStateService) History(ctx context.Context, entityID, agentID, sch
 
 // --- Schedule API ---
 
-// AcknowledgeSchedule marks a scheduled memory as run by advancing its last_accessed_at.
-// Call this after the agent has acted on a scheduled task to prevent re-firing.
+// AcknowledgeSchedule marks a scheduled memory as run.
+// It advances last_accessed_at to prevent re-firing and, for cron:once schedules,
+// archives the memory so one-shot reminders are consumed only when acknowledged.
 func (k *Keyoku) AcknowledgeSchedule(ctx context.Context, memoryID string) error {
-	return k.store.UpdateAccessStats(ctx, []string{memoryID})
+	if memoryID == "" {
+		return fmt.Errorf("memory_id is required")
+	}
+
+	mem, err := k.store.GetMemory(ctx, memoryID)
+	if err != nil {
+		return err
+	}
+	if mem == nil {
+		return fmt.Errorf("memory %s not found", memoryID)
+	}
+
+	sched, err := ParseScheduleFromTags(mem.Tags)
+	if err != nil || sched == nil {
+		return fmt.Errorf("memory %s is not a scheduled memory (no cron tag)", memoryID)
+	}
+
+	if err := k.store.UpdateAccessStats(ctx, []string{memoryID}); err != nil {
+		return err
+	}
+
+	if sched.Type == ScheduleOnce {
+		archivedState := storage.StateArchived
+		if _, err := k.store.UpdateMemory(ctx, memoryID, storage.MemoryUpdate{State: &archivedState}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // ListScheduled returns all cron-tagged memories for an entity/agent pair.

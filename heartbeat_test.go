@@ -153,12 +153,12 @@ func TestHeartbeatCheck_PendingWork_ExpiredDeadlineDoesNotBypassRecency(t *testi
 		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
 			return []*storage.Memory{
 				{
-					Content:   "old plan",
-					Type:      storage.TypePlan,
+					Content:    "old plan",
+					Type:       storage.TypePlan,
 					Importance: 0.9,
-					State:     storage.StateActive,
-					UpdatedAt: staleUpdated,
-					ExpiresAt: &expired,
+					State:      storage.StateActive,
+					UpdatedAt:  staleUpdated,
+					ExpiresAt:  &expired,
 				},
 			}, nil
 		},
@@ -242,6 +242,126 @@ func TestHeartbeatCheck_Scheduled(t *testing.T) {
 	}
 	if len(result.Scheduled) != 1 {
 		t.Errorf("Scheduled = %d, want 1", len(result.Scheduled))
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_DefaultAutoAck(t *testing.T) {
+	oldAccess := time.Now().Add(-25 * time.Hour)
+	ackCalls := 0
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{{
+				ID:             "sched-1",
+				Content:        "daily task",
+				Tags:           storage.StringSlice{"cron:daily"},
+				LastAccessedAt: &oldAccess,
+				CreatedAt:      oldAccess,
+				State:          storage.StateActive,
+			}}, nil
+		},
+		getMemoryFn: func(_ context.Context, id string) (*storage.Memory, error) {
+			return &storage.Memory{ID: id, Tags: storage.StringSlice{"cron:daily"}}, nil
+		},
+		updateAccessStatsFn: func(_ context.Context, ids []string) error {
+			ackCalls++
+			if len(ids) != 1 || ids[0] != "sched-1" {
+				t.Fatalf("UpdateAccessStats ids = %v, want [sched-1]", ids)
+			}
+			return nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	_, err := k.HeartbeatCheck(context.Background(), "entity-1", WithChecks(CheckScheduled))
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if ackCalls != 1 {
+		t.Fatalf("ackCalls = %d, want 1", ackCalls)
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_AutoAckDisabled(t *testing.T) {
+	oldAccess := time.Now().Add(-25 * time.Hour)
+	ackCalls := 0
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{{
+				ID:             "sched-1",
+				Content:        "daily task",
+				Tags:           storage.StringSlice{"cron:daily"},
+				LastAccessedAt: &oldAccess,
+				CreatedAt:      oldAccess,
+				State:          storage.StateActive,
+			}}, nil
+		},
+		updateAccessStatsFn: func(_ context.Context, _ []string) error {
+			ackCalls++
+			return nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	_, err := k.HeartbeatCheck(
+		context.Background(),
+		"entity-1",
+		WithChecks(CheckScheduled),
+		WithAutoAckScheduled(false),
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if ackCalls != 0 {
+		t.Fatalf("ackCalls = %d, want 0", ackCalls)
+	}
+}
+
+func TestHeartbeatCheck_Scheduled_AutoAckDisabled_DoesNotConsumeOnce(t *testing.T) {
+	now := time.Now().UTC()
+	target := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	lastRun := now.Add(-2 * time.Hour)
+	ackCalls := 0
+	archiveCalls := 0
+	store := &testStore{
+		queryMemoriesFn: func(_ context.Context, _ storage.MemoryQuery) ([]*storage.Memory, error) {
+			return []*storage.Memory{{
+				ID:             "once-1",
+				Content:        "one-time task",
+				Tags:           storage.StringSlice{"cron:once:" + target},
+				LastAccessedAt: &lastRun,
+				CreatedAt:      lastRun,
+				State:          storage.StateActive,
+			}}, nil
+		},
+		updateAccessStatsFn: func(_ context.Context, _ []string) error {
+			ackCalls++
+			return nil
+		},
+		updateMemoryFn: func(_ context.Context, _ string, _ storage.MemoryUpdate) (*storage.Memory, error) {
+			archiveCalls++
+			return &storage.Memory{}, nil
+		},
+	}
+
+	k := &Keyoku{store: store}
+	result, err := k.HeartbeatCheck(
+		context.Background(),
+		"entity-1",
+		WithChecks(CheckScheduled),
+		WithVirtualNow(now),
+		WithAutoAckScheduled(false),
+	)
+	if err != nil {
+		t.Fatalf("HeartbeatCheck error = %v", err)
+	}
+	if len(result.Scheduled) != 1 {
+		t.Fatalf("Scheduled = %d, want 1", len(result.Scheduled))
+	}
+	if ackCalls != 0 {
+		t.Fatalf("ackCalls = %d, want 0", ackCalls)
+	}
+	if archiveCalls != 0 {
+		t.Fatalf("archiveCalls = %d, want 0", archiveCalls)
 	}
 }
 
@@ -364,6 +484,11 @@ func TestHeartbeatOptions(t *testing.T) {
 	WithChecks(CheckPendingWork, CheckDeadlines)(cfg)
 	if len(cfg.checks) != 2 {
 		t.Errorf("checks = %d, want 2", len(cfg.checks))
+	}
+
+	WithAutoAckScheduled(false)(cfg)
+	if cfg.autoAckScheduled {
+		t.Errorf("autoAckScheduled = true, want false")
 	}
 }
 
@@ -587,9 +712,9 @@ func TestRunEnhancedLLMAnalysis_Success(t *testing.T) {
 		agentID:     "agent-1",
 	}
 	result := &HeartbeatResult{
-		Summary:          "PR #42 merged, deployment pending",
-		TimePeriod:       "last 2 hours",
-		ConfluenceScore:  99,
+		Summary:         "PR #42 merged, deployment pending",
+		TimePeriod:      "last 2 hours",
+		ConfluenceScore: 99,
 		PendingWork: []*storage.Memory{
 			{Content: "Deploy after PR merge"},
 		},
