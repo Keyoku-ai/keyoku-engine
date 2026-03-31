@@ -139,8 +139,10 @@ type Watcher struct {
 	lastFactors      *IntervalFactors
 	lastCheckAt      time.Time
 	lastDecision     string
-	tickHistory      []TickRecord
-	deliveryFailures int // consecutive delivery failures for backoff
+	tickHistory            []TickRecord
+	deliveryFailures       int       // consecutive delivery failures for backoff
+	lastFailedFingerprint  string    // fingerprint of last failed delivery
+	lastDeliveryFailureAt  time.Time // when the last failure occurred
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -576,14 +578,67 @@ func (w *Watcher) checkAll() {
 
 		// Deliver via external agent if configured
 		if w.deliverer != nil {
+			// Suspend delivery after 3 consecutive failures. Failed deliveries
+			// cause agent responses to be captured as new memories, which shifts
+			// fingerprints and bypasses dedup — creating an infinite loop.
+			// Auto-retry after 1h per failure beyond 3 (max 6h cooloff).
+			// Critical/immediate signals (deadlines) always get through.
+			w.mu.RLock()
+			failures := w.deliveryFailures
+			lastFailAt := w.lastDeliveryFailureAt
+			w.mu.RUnlock()
+
+			skipDelivery := false
+			if failures >= 3 && result.HighestUrgencyTier != TierImmediate {
+				// Allow retry after cooloff: 1h per failure beyond 3, max 6h
+				cooloff := time.Duration(min(failures-2, 6)) * time.Hour
+				if time.Since(lastFailAt) < cooloff {
+					skipDelivery = true
+				} else {
+					// Cooloff expired — allow one retry attempt
+					w.logger.Info("delivery cooloff expired, retrying",
+						"entity", entityID,
+						"failures", failures,
+						"cooloff", cooloff,
+					)
+				}
+			}
+
+			if skipDelivery {
+				w.logger.Warn("skipping delivery: same fingerprint failed repeatedly",
+					"entity", entityID,
+					"fingerprint", result.SignalFingerprint,
+					"consecutive_failures", w.deliveryFailures,
+				)
+				skipped := false
+				w.mu.Lock()
+				w.appendTick(TickRecord{
+					Timestamp:      time.Now(),
+					EntityID:       entityID,
+					Decision:       "act",
+					DecisionReason: "delivery_suspended",
+					SignalCount:    countSignals(result),
+					SignalSummary:  buildSignalSummary(result),
+					UrgencyTier:    result.Urgency,
+					TimePeriod:     string(w.keyoku.currentTimePeriod()),
+					Fingerprint:    result.SignalFingerprint,
+					Delivered:      &skipped,
+				})
+				w.mu.Unlock()
+				continue
+			}
+
 			deliverErr := w.deliverer.Deliver(w.ctx, entityID, result)
 			delivered := deliverErr == nil
 			w.mu.Lock()
 			if delivered {
 				w.lastActTime = time.Now()
 				w.deliveryFailures = 0
+				w.lastFailedFingerprint = ""
 			} else {
 				w.deliveryFailures++
+				w.lastFailedFingerprint = result.SignalFingerprint
+				w.lastDeliveryFailureAt = time.Now()
 				w.logger.Error("heartbeat delivery failed",
 					"entity", entityID,
 					"error", deliverErr,
