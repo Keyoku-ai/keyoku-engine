@@ -30,6 +30,7 @@ func NewHandlers(k *keyoku.Keyoku, hub *SSEHub) *Handlers {
 type rememberRequest struct {
 	EntityID   string `json:"entity_id"`
 	Content    string `json:"content"`
+	TimeoutMs  int    `json:"timeout_ms,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`
 	Source     string `json:"source,omitempty"`
@@ -51,6 +52,7 @@ type rememberResponse struct {
 type searchRequest struct {
 	EntityID  string  `json:"entity_id"`
 	Query     string  `json:"query"`
+	TimeoutMs int     `json:"timeout_ms,omitempty"`
 	Limit     int     `json:"limit,omitempty"`
 	Mode      string  `json:"mode,omitempty"`
 	AgentID   string  `json:"agent_id,omitempty"`
