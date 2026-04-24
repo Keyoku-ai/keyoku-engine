@@ -4,7 +4,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -30,6 +32,7 @@ func NewHandlers(k *keyoku.Keyoku, hub *SSEHub) *Handlers {
 type rememberRequest struct {
 	EntityID   string `json:"entity_id"`
 	Content    string `json:"content"`
+	TimeoutMs  int    `json:"timeout_ms,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	AgentID    string `json:"agent_id,omitempty"`
 	Source     string `json:"source,omitempty"`
@@ -51,6 +54,7 @@ type rememberResponse struct {
 type searchRequest struct {
 	EntityID  string  `json:"entity_id"`
 	Query     string  `json:"query"`
+	TimeoutMs int     `json:"timeout_ms,omitempty"`
 	Limit     int     `json:"limit,omitempty"`
 	Mode      string  `json:"mode,omitempty"`
 	AgentID   string  `json:"agent_id,omitempty"`
@@ -360,11 +364,52 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	writeInternalErrorWithContext(w, "", err)
 }
 
-func writeInternalErrorWithContext(w http.ResponseWriter, context string, err error) {
-	if context == "" {
+// isDeadlineExceeded returns true for wrapped context.DeadlineExceeded and also
+// catches providers that return a non-wrapping string (older SDKs). Matches on
+// the stable Go-standard message rather than arbitrary provider text.
+func isDeadlineExceeded(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return strings.Contains(err.Error(), "context deadline exceeded")
+}
+
+func isCanceled(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return strings.Contains(err.Error(), "context canceled")
+}
+
+func writeInternalErrorWithContext(w http.ResponseWriter, ctxLabel string, err error) {
+	// Caller-controlled budget exhaustion (timeout_ms or upstream deadline) maps
+	// to 504 with a stable code so clients can distinguish it from server faults.
+	if isDeadlineExceeded(err) {
+		if ctxLabel == "" {
+			log.Printf("INFO: request timed out: %v", err)
+		} else {
+			log.Printf("INFO [%s]: request timed out: %v", ctxLabel, err)
+		}
+		writeErrorCode(w, http.StatusGatewayTimeout, "request exceeded timeout budget", "request_timeout", true)
+		return
+	}
+
+	// Client went away (disconnect / upstream cancellation). Nothing useful to
+	// send back; just log and return without touching the response writer so
+	// the connection isn't kept alive writing to a dead peer.
+	if isCanceled(err) {
+		if ctxLabel == "" {
+			log.Printf("INFO: request canceled by client: %v", err)
+		} else {
+			log.Printf("INFO [%s]: request canceled by client: %v", ctxLabel, err)
+		}
+		return
+	}
+
+	if ctxLabel == "" {
 		log.Printf("ERROR: %v", err)
 	} else {
-		log.Printf("ERROR [%s]: %v", context, err)
+		log.Printf("ERROR [%s]: %v", ctxLabel, err)
 	}
 
 	errStr := err.Error()
