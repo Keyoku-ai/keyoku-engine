@@ -33,18 +33,32 @@ type EngineConfig struct {
 	ReEvalSimilarityMin float64 // min similarity for re-eval candidates (default: 0.5)
 	ReEvalSimilarityMax float64 // max similarity for re-eval candidates (default: 0.85)
 	ReEvalImportanceMin float64 // min importance for re-eval candidates (default: 0.5)
+
+	// Extraction prompt budgets — cap inputs into ExtractMemories so repeated
+	// same-entity writes don't balloon the prompt and push local LLMs over
+	// their usable latency window. See issue #41.
+	ExtractionExistingMaxCount   int     // max existing-memory neighbors considered (default: 10)
+	ExtractionExistingMinScore   float64 // min similarity for existing-memory neighbors (default: 0.5)
+	ExtractionExistingMaxBytes   int     // byte cap on formatted existingMemories block (default: 4096; 0 = unlimited)
+	ExtractionContextMaxBytes    int     // byte cap on formatted conversationCtx block (default: 4096; 0 = unlimited)
+	ExtractionMemoryContentTrim  int     // per-memory content trim for the existing-memories prompt (default: 240; 0 = no trim)
 }
 
 // DefaultEngineConfig returns a default engine configuration.
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		ContextTurns:          5,
-		DefaultMinScore:       0.3,
-		FTSBaselineSimilarity: 0.4,
-		DiversityThreshold:    0.9,
-		ReEvalSimilarityMin:   0.5,
-		ReEvalSimilarityMax:   0.85,
-		ReEvalImportanceMin:   0.5,
+		ContextTurns:                5,
+		DefaultMinScore:             0.3,
+		FTSBaselineSimilarity:       0.4,
+		DiversityThreshold:          0.9,
+		ReEvalSimilarityMin:         0.5,
+		ReEvalSimilarityMax:         0.85,
+		ReEvalImportanceMin:         0.5,
+		ExtractionExistingMaxCount:  10,
+		ExtractionExistingMinScore:  0.5,
+		ExtractionExistingMaxBytes:  4096,
+		ExtractionContextMaxBytes:   4096,
+		ExtractionMemoryContentTrim: 240,
 	}
 }
 
@@ -99,6 +113,27 @@ func NewEngine(
 	}
 	if config.ReEvalImportanceMin <= 0 {
 		config.ReEvalImportanceMin = 0.5
+	}
+	if config.ExtractionExistingMaxCount <= 0 {
+		config.ExtractionExistingMaxCount = 10
+	}
+	if config.ExtractionExistingMinScore <= 0 {
+		config.ExtractionExistingMinScore = 0.5
+	}
+	if config.ExtractionExistingMaxBytes < 0 {
+		config.ExtractionExistingMaxBytes = 0
+	} else if config.ExtractionExistingMaxBytes == 0 {
+		config.ExtractionExistingMaxBytes = 4096
+	}
+	if config.ExtractionContextMaxBytes < 0 {
+		config.ExtractionContextMaxBytes = 0
+	} else if config.ExtractionContextMaxBytes == 0 {
+		config.ExtractionContextMaxBytes = 4096
+	}
+	if config.ExtractionMemoryContentTrim < 0 {
+		config.ExtractionMemoryContentTrim = 0
+	} else if config.ExtractionMemoryContentTrim == 0 {
+		config.ExtractionMemoryContentTrim = 240
 	}
 
 	graphEngine := NewGraphEngine(store, DefaultGraphConfig())

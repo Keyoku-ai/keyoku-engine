@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/keyoku-ai/keyoku-engine/llm"
@@ -80,21 +81,22 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 	}
 
 	// Get conversation context
+	t0 := time.Now()
 	contextMsgs, err := e.store.GetRecentSessionMessages(ctx, entityID, e.config.ContextTurns)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session context: %w", err)
 	}
+	sessionMs := time.Since(t0).Milliseconds()
 
-	var conversationCtx []string
-	for _, msg := range contextMsgs {
-		conversationCtx = append(conversationCtx, fmt.Sprintf("[%s]: %s", msg.Role, msg.Content))
-	}
+	conversationCtx, ctxBytes := buildConversationContext(contextMsgs, e.config.ExtractionContextMaxBytes)
 
 	// Embed content to find similar existing memories
+	t0 = time.Now()
 	queryEmbedding, err := e.embedder.Embed(ctx, req.Content)
 	if err != nil {
 		return nil, fmt.Errorf("failed to embed query: %w", err)
 	}
+	embedMs := time.Since(t0).Milliseconds()
 
 	// Build visibility context for similarity search so dedup/conflict only considers visible memories
 	var visibilityFor *storage.VisibilityContext
@@ -106,26 +108,46 @@ func (e *Engine) Add(ctx context.Context, entityID string, req AddRequest) (*Add
 		visibilityFor = &storage.VisibilityContext{AgentID: agentID, TeamID: req.TeamID}
 	}
 
-	similarMemories, err := e.store.FindSimilarWithOptions(ctx, queryEmbedding, entityID, 10, 0.5, storage.SimilarityOptions{
-		AgentID:       req.AgentID,
-		VisibilityFor: visibilityFor,
-	})
+	t0 = time.Now()
+	similarMemories, err := e.store.FindSimilarWithOptions(
+		ctx, queryEmbedding, entityID,
+		e.config.ExtractionExistingMaxCount,
+		e.config.ExtractionExistingMinScore,
+		storage.SimilarityOptions{
+			AgentID:       req.AgentID,
+			VisibilityFor: visibilityFor,
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find similar memories: %w", err)
 	}
+	similarMs := time.Since(t0).Milliseconds()
 
-	var existingMemories []string
-	for _, sm := range similarMemories {
-		existingMemories = append(existingMemories, fmt.Sprintf("[%s, %s, importance:%.1f] %s",
-			sm.Memory.Type, sm.Memory.State, sm.Memory.Importance, sm.Memory.Content))
-	}
+	existingMemories, existingBytes := buildExistingMemoriesBlock(
+		similarMemories,
+		e.config.ExtractionExistingMaxBytes,
+		e.config.ExtractionMemoryContentTrim,
+	)
 
 	// Extract memories using LLM
+	t0 = time.Now()
 	extractResp, err := e.provider.ExtractMemories(ctx, llm.ExtractionRequest{
 		Content:          req.Content,
 		ConversationCtx:  conversationCtx,
 		ExistingMemories: existingMemories,
 	})
+	extractMs := time.Since(t0).Milliseconds()
+
+	// Per-stage timing + payload-size trace. See harness/40-invariants/observability.md
+	// (Add() stage timings) and issue #41. Structured key=value so ops/tooling can grep.
+	log.Printf(
+		"INFO [remember/add] stage=extract entity_id=%q session_ms=%d embed_ms=%d similar_ms=%d extract_ms=%d existing_count=%d existing_bytes=%d ctx_msgs=%d ctx_bytes=%d err=%v",
+		entityID, sessionMs, embedMs, similarMs, extractMs,
+		len(existingMemories), existingBytes,
+		len(conversationCtx), ctxBytes,
+		err,
+	)
+
 	if err != nil {
 		return nil, fmt.Errorf("extraction failed: %w", err)
 	}
