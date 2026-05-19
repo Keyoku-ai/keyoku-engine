@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,6 +14,19 @@ import (
 	keyoku "github.com/keyoku-ai/keyoku-engine"
 	"github.com/keyoku-ai/keyoku-engine/storage"
 )
+
+func requestTimeout(timeoutMs int) (time.Duration, bool) {
+	if timeoutMs <= 0 {
+		return 0, false
+	}
+	if timeoutMs < 1000 {
+		timeoutMs = 1000
+	}
+	if timeoutMs > 300000 {
+		timeoutMs = 300000
+	}
+	return time.Duration(timeoutMs) * time.Millisecond, true
+}
 
 // HandleRemember extracts and stores memories from content.
 func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +80,14 @@ func (h *Handlers) HandleRemember(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, keyoku.WithCreatedAt(t))
 	}
 
-	result, err := h.k.Remember(r.Context(), req.EntityID, req.Content, opts...)
+	ctx := r.Context()
+	if timeout, ok := requestTimeout(req.TimeoutMs); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	result, err := h.k.Remember(ctx, req.EntityID, req.Content, opts...)
 	if err != nil {
 		writeInternalErrorWithContext(w, "remember", err)
 		return
@@ -115,7 +136,14 @@ func (h *Handlers) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		opts = append(opts, keyoku.WithSearchAgentID(req.AgentID))
 	}
 
-	results, err := h.k.Search(r.Context(), req.EntityID, req.Query, opts...)
+	ctx := r.Context()
+	if timeout, ok := requestTimeout(req.TimeoutMs); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	results, err := h.k.Search(ctx, req.EntityID, req.Query, opts...)
 	if err != nil {
 		writeInternalErrorWithContext(w, "search", err)
 		return
