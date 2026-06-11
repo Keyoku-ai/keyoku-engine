@@ -2,41 +2,34 @@
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0f0a1e;stop-opacity:1" />
-      <stop offset="50%" style="stop-color:#1a1035;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#151030;stop-opacity:1" />
       <stop offset="100%" style="stop-color:#0d0b1a;stop-opacity:1" />
     </linearGradient>
     <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#a78bfa;stop-opacity:1" />
-    </linearGradient>
-    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#6366f1;stop-opacity:0.15" />
-      <stop offset="50%" style="stop-color:#8b5cf6;stop-opacity:0.25" />
-      <stop offset="100%" style="stop-color:#a78bfa;stop-opacity:0.1" />
+      <stop offset="0%" style="stop-color:#818cf8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#c4b5fd;stop-opacity:1" />
     </linearGradient>
   </defs>
   <style>
-    .orb1 { animation: float1 6s ease-in-out infinite; }
-    .orb2 { animation: float2 8s ease-in-out infinite; }
-    .orb3 { animation: float3 7s ease-in-out infinite; }
-    .particle { animation: drift 12s linear infinite; }
+    .orb1 { animation: float1 7s ease-in-out infinite; }
+    .orb2 { animation: float2 9s ease-in-out infinite; }
+    .orb3 { animation: float3 6s ease-in-out infinite; }
+    .pulse { animation: pulse 4s ease-in-out infinite; }
     @keyframes float1 {
-      0%, 100% { transform: translate(0, 0); opacity: 0.18; }
-      50% { transform: translate(10px, -8px); opacity: 0.3; }
+      0%, 100% { transform: translate(0, 0); opacity: 0.15; }
+      50% { transform: translate(12px, -6px); opacity: 0.25; }
     }
     @keyframes float2 {
-      0%, 100% { transform: translate(0, 0); opacity: 0.12; }
-      50% { transform: translate(-15px, 5px); opacity: 0.22; }
+      0%, 100% { transform: translate(0, 0); opacity: 0.1; }
+      50% { transform: translate(-10px, 8px); opacity: 0.2; }
     }
     @keyframes float3 {
-      0%, 100% { transform: translate(0, 0); opacity: 0.15; }
-      50% { transform: translate(8px, 10px); opacity: 0.25; }
+      0%, 100% { transform: translate(0, 0); opacity: 0.12; }
+      50% { transform: translate(6px, -10px); opacity: 0.22; }
     }
-    @keyframes drift {
-      0% { transform: translateX(-40px); opacity: 0; }
-      10% { opacity: 0.6; }
-      90% { opacity: 0.6; }
-      100% { transform: translateX(840px); opacity: 0; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 0.6; }
     }
   </style>
 
@@ -44,71 +37,49 @@
   <rect width="800" height="220" rx="16" fill="url(#bg)"/>
 
   <!-- Glow bar -->
-  <rect x="0" y="216" width="800" height="4" rx="2" fill="url(#accent)" opacity="0.6"/>
+  <rect x="0" y="216" width="800" height="4" rx="2" fill="url(#accent)" opacity="0.5"/>
 
   <!-- Floating orbs -->
-  <circle class="orb1" cx="120" cy="60" r="80" fill="#6366f1" opacity="0.18"/>
-  <circle class="orb2" cx="680" cy="150" r="100" fill="#8b5cf6" opacity="0.12"/>
-  <circle class="orb3" cx="400" cy="180" r="60" fill="#a78bfa" opacity="0.15"/>
+  <circle class="orb1" cx="150" cy="50" r="70" fill="#818cf8" opacity="0.15"/>
+  <circle class="orb2" cx="650" cy="160" r="90" fill="#a78bfa" opacity="0.1"/>
+  <circle class="orb3" cx="350" cy="170" r="50" fill="#c4b5fd" opacity="0.12"/>
 
-  <!-- Grid dots -->
+  <!-- Connector lines (SDK connecting things) -->
   <g opacity="0.08">
-    <circle cx="50" cy="30" r="1" fill="#a78bfa"/><circle cx="100" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="150" cy="30" r="1" fill="#a78bfa"/><circle cx="200" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="250" cy="30" r="1" fill="#a78bfa"/><circle cx="300" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="350" cy="30" r="1" fill="#a78bfa"/><circle cx="400" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="450" cy="30" r="1" fill="#a78bfa"/><circle cx="500" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="550" cy="30" r="1" fill="#a78bfa"/><circle cx="600" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="650" cy="30" r="1" fill="#a78bfa"/><circle cx="700" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="750" cy="30" r="1" fill="#a78bfa"/>
-    <circle cx="50" cy="190" r="1" fill="#a78bfa"/><circle cx="100" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="150" cy="190" r="1" fill="#a78bfa"/><circle cx="200" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="250" cy="190" r="1" fill="#a78bfa"/><circle cx="300" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="350" cy="190" r="1" fill="#a78bfa"/><circle cx="400" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="450" cy="190" r="1" fill="#a78bfa"/><circle cx="500" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="550" cy="190" r="1" fill="#a78bfa"/><circle cx="600" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="650" cy="190" r="1" fill="#a78bfa"/><circle cx="700" cy="190" r="1" fill="#a78bfa"/>
-    <circle cx="750" cy="190" r="1" fill="#a78bfa"/>
+    <line x1="100" y1="40" x2="300" y2="80" stroke="#818cf8" stroke-width="1"/>
+    <line x1="500" y1="60" x2="700" y2="100" stroke="#a78bfa" stroke-width="1"/>
+    <line x1="200" y1="170" x2="600" y2="150" stroke="#c4b5fd" stroke-width="1"/>
   </g>
 
-  <!-- Drifting particles -->
-  <circle class="particle" cx="0" cy="70" r="1.5" fill="#818cf8" opacity="0"/>
-  <circle class="particle" cx="0" cy="140" r="1" fill="#a78bfa" opacity="0" style="animation-delay: 4s"/>
-  <circle class="particle" cx="0" cy="100" r="1.2" fill="#6366f1" opacity="0" style="animation-delay: 8s"/>
-
-  <!-- Memory icon (brain-circuit) -->
-  <g transform="translate(290, 55)" opacity="0.9">
-    <circle cx="0" cy="0" r="4" fill="#a78bfa"/>
-    <circle cx="20" cy="-15" r="3" fill="#818cf8"/>
-    <circle cx="-15" cy="15" r="3" fill="#818cf8"/>
-    <line x1="0" y1="0" x2="20" y2="-15" stroke="#6366f1" stroke-width="1" opacity="0.5"/>
-    <line x1="0" y1="0" x2="-15" y2="15" stroke="#6366f1" stroke-width="1" opacity="0.5"/>
-  </g>
+  <!-- Pulsing node dots -->
+  <circle class="pulse" cx="100" cy="40" r="3" fill="#818cf8"/>
+  <circle class="pulse" cx="300" cy="80" r="3" fill="#818cf8" style="animation-delay: 1s"/>
+  <circle class="pulse" cx="500" cy="60" r="3" fill="#a78bfa" style="animation-delay: 2s"/>
+  <circle class="pulse" cx="700" cy="100" r="3" fill="#a78bfa" style="animation-delay: 0.5s"/>
+  <circle class="pulse" cx="200" cy="170" r="3" fill="#c4b5fd" style="animation-delay: 1.5s"/>
+  <circle class="pulse" cx="600" cy="150" r="3" fill="#c4b5fd" style="animation-delay: 3s"/>
 
   <!-- Title -->
   <text x="400" y="95" font-family="ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, monospace"
-        font-size="46" font-weight="700" fill="white" text-anchor="middle" letter-spacing="-1">
-    Keyoku Engine
+        font-size="50" font-weight="700" fill="white" text-anchor="middle" letter-spacing="-1">
+    Keyoku
   </text>
 
   <!-- Tagline -->
   <text x="400" y="130" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif"
-        font-size="18" fill="#a5b4fc" text-anchor="middle" letter-spacing="0.5" opacity="0.85">
-    Persistent AI Memory Engine
+        font-size="18" fill="#c4b5fd" text-anchor="middle" letter-spacing="0.5" opacity="0.85">
+    TypeScript SDK for AI Memory
   </text>
 
   <!-- Subtitle pills -->
-  <g transform="translate(400, 160)" text-anchor="middle">
-    <rect x="-185" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.2"/>
-    <text x="-145" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#a5b4fc">Go</text>
+  <g transform="translate(400, 162)" text-anchor="middle">
+    <rect x="-170" y="-14" width="100" height="24" rx="12" fill="#818cf8" opacity="0.15"/>
+    <text x="-120" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#c4b5fd">TypeScript</text>
 
-    <rect x="-85" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.2"/>
-    <text x="-45" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#a5b4fc">SQLite</text>
+    <rect x="-50" y="-14" width="100" height="24" rx="12" fill="#818cf8" opacity="0.15"/>
+    <text x="0" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#c4b5fd">OpenClaw</text>
 
-    <rect x="15" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.2"/>
-    <text x="55" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#a5b4fc">HNSW</text>
-
-    <rect x="115" y="-14" width="80" height="24" rx="12" fill="#6366f1" opacity="0.2"/>
-    <text x="155" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#a5b4fc">Vector</text>
+    <rect x="70" y="-14" width="100" height="24" rx="12" fill="#818cf8" opacity="0.15"/>
+    <text x="120" y="4" font-family="ui-monospace, monospace" font-size="11" fill="#c4b5fd">Semantic</text>
   </g>
 </svg>
