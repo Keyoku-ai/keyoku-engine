@@ -8,7 +8,7 @@
 
   <p>
     <strong>The memory engine that makes AI agents feel human.</strong><br>
-    <sub>Memories that live, decay, and consolidate. A knowledge graph that understands relationships.<br>A brain that decides what matters — all running locally in pure Go.</sub>
+    <sub>Memories that live, decay, and consolidate. A knowledge graph that understands relationships.<br>A brain that decides what matters — all running locally in pure Go.<br>The backend behind <a href="https://github.com/Keyoku-ai/keyoku">Keyoku</a> — the activity-tracing workflow layer for Claude Code.</sub>
   </p>
 
   <p>
