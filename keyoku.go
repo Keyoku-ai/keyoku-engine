@@ -243,12 +243,15 @@ func New(cfg Config) (*Keyoku, error) {
 }
 
 // NewForTesting creates a minimal Keyoku suitable for tests that don't need
-// an LLM provider or embedder. Uses the given store directly.
+// an LLM provider or embedder. Uses the given store directly. The time period
+// is pinned to working hours so heartbeat decisions don't depend on the
+// wall-clock hour the test suite happens to run at (CI runs at night UTC).
 func NewForTesting(store storage.Store) *Keyoku {
 	return &Keyoku{
-		store:    store,
-		logger:   slog.Default(),
-		eventBus: NewEventBus(false),
+		store:              store,
+		logger:             slog.Default(),
+		eventBus:           NewEventBus(false),
+		timePeriodOverride: PeriodWorking,
 	}
 }
 
