@@ -40,6 +40,29 @@ Keyoku is not a vector database. It's a **cognitive engine** — the system that
 
 Zero external dependencies. Pure Go. SQLite + in-process HNSW. Your data never leaves your machine.
 
+## Keyoku Harness Integration
+
+The engine is the brain of [Keyoku](https://github.com/Keyoku-ai/keyoku) — the
+workflow harness for coding agents. Point the harness at a running engine:
+
+```bash
+keyoku-server &                     # embedder only; Ollama works, no API key needed
+export KEYOKU_ENGINE_URL=http://localhost:8080
+```
+
+The harness mirrors its knowledge layer (connector descriptions, mined
+practice patterns, agent research, CLAUDE.md conventions) into the engine via
+`POST /api/v1/seed` — the extraction-free door — and upgrades `knowledge_query`
+to semantic search via `POST /api/v1/search`. Decay, dedup, and the knowledge
+graph apply automatically. The harness degrades to local JSONL when no engine
+is configured.
+
+> **Subsystem status for the harness product:** storage, search, embeddings,
+> dedup, decay, and the knowledge graph are the active core. The heartbeat /
+> proactive-nudge subsystem predates the harness relaunch and is not used by
+> it — it remains maintained for standalone memory-engine deployments and
+> will be superseded by a slimmer trigger scan.
+
 ## Quick Start
 
 ### As a Go library
