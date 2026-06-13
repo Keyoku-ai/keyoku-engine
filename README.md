@@ -47,7 +47,7 @@ workflow harness for coding agents. Point the harness at a running engine:
 
 ```bash
 keyoku-server &                     # embedder only; Ollama works, no API key needed
-export KEYOKU_ENGINE_URL=http://localhost:8080
+export KEYOKU_ENGINE_URL=http://localhost:18900
 ```
 
 The harness mirrors its knowledge layer (connector descriptions, mined
@@ -112,7 +112,7 @@ Default port: `18900` (override with `--port` or `KEYOKU_PORT`).
 
 ## The Brain
 
-The heartbeat is Keyoku's most important subsystem. It turns passive memory into active intelligence.
+The heartbeat is the standalone memory-engine's proactive layer — it turns passive memory into active intelligence. *(The Keyoku harness does not use it; see the subsystem-status note above.)*
 
 ### How it works
 
