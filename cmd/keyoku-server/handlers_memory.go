@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -209,12 +210,20 @@ func (h *Handlers) HandleListMemories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var allMemories []memoryJSON
+	skipped := 0
 	for _, eid := range entities {
 		memories, err := h.k.List(r.Context(), eid, limit)
 		if err != nil {
+			// Don't fail the whole request for one bad entity — but don't hide
+			// it either: a silent skip makes a partial 200 look complete.
+			log.Printf("WARN: list memories for entity %q failed, skipping: %v", eid, err)
+			skipped++
 			continue
 		}
 		allMemories = append(allMemories, toMemoryJSONSlice(memories)...)
+	}
+	if skipped > 0 {
+		log.Printf("WARN: list-all-entities returned partial results: %d of %d entities skipped", skipped, len(entities))
 	}
 	// Sort by created_at descending, then cap to limit
 	sort.Slice(allMemories, func(i, j int) bool {
